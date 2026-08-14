@@ -263,8 +263,8 @@ eclipse_assembler/
 │   ├── pre_totality.mp4              # Accelerated & stabilized pre-totality (10.00s)
 │   ├── totality.mp4                  # Stabilized totality (96.93s)
 │   ├── partial_egress.mp4            # Stabilized partial egress (8.17s)
-│   ├── full_eclipse.mp4              # ★ Complete master film (133.00s / 10.35 MB)
-│   ├── full_eclipse_30s.mp4          # ⚡ Compact 30s accelerated film (30.00s / 1.26 MB)
+│   ├── full_eclipse.mp4              # ★ Complete master film (130.03s / 10.40 MB)
+│   ├── full_eclipse_30s.mp4          # ⚡ Compact 30s accelerated film (30.00s / 1.28 MB)
 │   ├── eclipse_composite_sinusoid_3840p.png # 🖼️ UHD S-Curve composite (3840x3840)
 │   ├── eclipse_composite_vertical_2160x3840.png # 📱 UHD Vertical 9:16 linear mobile composite (2160x3840)
 │   ├── eclipse_composite_vertical_s_2160x3840.png # 📱 UHD Vertical 9:16 S-curve mobile composite (2160x3840)
@@ -286,8 +286,8 @@ eclipse_assembler/
 | **`pre_totality.mp4`** | 1280x720 | 30.0 fps | 10.00s (0.69 MB) | Accelerated 10s pre-totality approach (0 black frames) |
 | **`totality.mp4`** | 1280x720 | 30.0 fps | 96.93s (11.82 MB) | Totality & corona with $C_2$ center inheritance |
 | **`partial_egress.mp4`** | 1280x720 | 30.1 fps | 8.17s (1.22 MB) | Stabilized partial egress with $C_3$ center inheritance |
-| **`full_eclipse.mp4`** | **1280x720** | **30.0 fps** | **133.00s (10.35 MB)** | 🎬 **Master film with cinematic `fade_to_black` transitions** |
-| **`full_eclipse_30s.mp4`** | **1280x720** | **30.0 fps** | **30.00s (1.26 MB)** | ⚡ **Accelerated 30s compact video in H.264 for universal sharing** |
+| **`full_eclipse.mp4`** | **1280x720** | **30.0 fps** | **130.03s (10.40 MB)** | 🎬 **Master film with cinematic `fade_to_black` transitions** |
+| **`full_eclipse_30s.mp4`** | **1280x720** | **30.0 fps** | **30.00s (1.28 MB)** | ⚡ **Accelerated 30s compact video in H.264 for universal sharing** |
 | **`eclipse_composite_vertical_2160x3840.png`** | **2160x3840** | **PNG / JPG** | **0.52 MB / 0.23 MB** | 📱 **UHD Vertical 9:16 linear mobile wallpaper format** |
 | **`eclipse_composite_vertical_s_2160x3840.png`** | **2160x3840** | **PNG / JPG** | **0.54 MB / 0.23 MB** | 📱 **UHD Vertical 9:16 S-curve mobile wallpaper format** |
 | **`eclipse_composite_sinusoid_3840p.png`** | **3840x3840** | **PNG / JPG** | **0.57 MB / 0.33 MB** | 🖼️ **UHD S-Curve wave composite with totality at center** |
