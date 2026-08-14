@@ -542,7 +542,7 @@ def resolve_input_file(in_dir: str, primary_name: str, alt_names: list[str]) -> 
 
 
 def build_pipeline(
-    pretotal_duration: float = 15.0,
+    pretotal_duration: float = 10.0,
     transition_type: str = "fade_to_black",
     freeze_before: float = 1.0,
     fade_out: float = 0.5,
@@ -626,8 +626,8 @@ def build_pipeline(
 
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(description="Automated Solar Eclipse 2026 Processing & Assembly Pipeline")
-    parser.add_argument("--pretotal-duration", "-p", type=float, default=15.0,
-                        help="Target duration in seconds for pre-totality sequence (default: 15.0s)")
+    parser.add_argument("--pretotal-duration", "-p", type=float, default=10.0,
+                        help="Target duration in seconds for pre-totality sequence (default: 10.0s)")
     parser.add_argument("--transition-type", type=str, choices=["fade_to_black", "hard", "crossfade"], default="fade_to_black",
                         help="Transition style: 'fade_to_black' (freeze A + dip to black + freeze B), 'hard' (instant cut with freezes), or 'crossfade' (dissolve with freezes). Default: fade_to_black")
     parser.add_argument("--freeze-before", type=float, default=1.0,

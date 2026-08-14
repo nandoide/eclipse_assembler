@@ -260,11 +260,11 @@ eclipse_assembler/
 │
 ├── 040_out/                          # Generated stabilized output videos and artwork
 │   ├── partial_ingress.mp4           # Stabilized partial ingress (8.90s)
-│   ├── pre_totality.mp4              # Accelerated & stabilized pre-totality (15.00s)
+│   ├── pre_totality.mp4              # Accelerated & stabilized pre-totality (10.00s)
 │   ├── totality.mp4                  # Stabilized totality (96.93s)
 │   ├── partial_egress.mp4            # Stabilized partial egress (8.17s)
-│   ├── full_eclipse.mp4              # ★ Complete master film (138.00s / 10.60 MB)
-│   ├── full_eclipse_30s.mp4          # ⚡ Compact 30s accelerated film (30.00s / 1.19 MB)
+│   ├── full_eclipse.mp4              # ★ Complete master film (133.00s / 10.35 MB)
+│   ├── full_eclipse_30s.mp4          # ⚡ Compact 30s accelerated film (30.00s / 1.26 MB)
 │   ├── eclipse_composite_sinusoid_3840p.png # 🖼️ UHD S-Curve composite (3840x3840)
 │   ├── eclipse_composite_vertical_2160x3840.png # 📱 UHD Vertical 9:16 linear mobile composite (2160x3840)
 │   ├── eclipse_composite_vertical_s_2160x3840.png # 📱 UHD Vertical 9:16 S-curve mobile composite (2160x3840)
@@ -283,11 +283,11 @@ eclipse_assembler/
 | Output Asset | Resolution | Frame Rate / Type | Duration / Size | Description |
 | :--- | :--- | :--- | :--- | :--- |
 | **`partial_ingress.mp4`** | 1280x720 | 30.0 fps | 8.90s (1.61 MB) | Stabilized partial ingress ($R = 238.5\text{ px}$) |
-| **`pre_totality.mp4`** | 1280x720 | 30.0 fps | 15.00s (1.02 MB) | Accelerated 15s pre-totality approach (0 black frames) |
+| **`pre_totality.mp4`** | 1280x720 | 30.0 fps | 10.00s (0.69 MB) | Accelerated 10s pre-totality approach (0 black frames) |
 | **`totality.mp4`** | 1280x720 | 30.0 fps | 96.93s (11.82 MB) | Totality & corona with $C_2$ center inheritance |
 | **`partial_egress.mp4`** | 1280x720 | 30.1 fps | 8.17s (1.22 MB) | Stabilized partial egress with $C_3$ center inheritance |
-| **`full_eclipse.mp4`** | **1280x720** | **30.0 fps** | **138.00s (10.60 MB)** | 🎬 **Master film with cinematic `fade_to_black` transitions** |
-| **`full_eclipse_30s.mp4`** | **1280x720** | **30.0 fps** | **30.00s (1.19 MB)** | ⚡ **Accelerated 30s compact video in H.264 for universal sharing** |
+| **`full_eclipse.mp4`** | **1280x720** | **30.0 fps** | **133.00s (10.35 MB)** | 🎬 **Master film with cinematic `fade_to_black` transitions** |
+| **`full_eclipse_30s.mp4`** | **1280x720** | **30.0 fps** | **30.00s (1.26 MB)** | ⚡ **Accelerated 30s compact video in H.264 for universal sharing** |
 | **`eclipse_composite_vertical_2160x3840.png`** | **2160x3840** | **PNG / JPG** | **0.52 MB / 0.23 MB** | 📱 **UHD Vertical 9:16 linear mobile wallpaper format** |
 | **`eclipse_composite_vertical_s_2160x3840.png`** | **2160x3840** | **PNG / JPG** | **0.54 MB / 0.23 MB** | 📱 **UHD Vertical 9:16 S-curve mobile wallpaper format** |
 | **`eclipse_composite_sinusoid_3840p.png`** | **3840x3840** | **PNG / JPG** | **0.57 MB / 0.33 MB** | 🖼️ **UHD S-Curve wave composite with totality at center** |
