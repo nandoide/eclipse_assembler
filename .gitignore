@@ -1,0 +1,28 @@
+# Byte-compiled / optimized / DLL files
+__pycache__/
+*.py[cod]
+*$py.class
+
+# macOS system files
+.DS_Store
+.AppleDouble
+.LSOverride
+
+# Virtual Environments
+.venv/
+env/
+venv/
+ENV/
+
+# Large media input/output directories & video files
+010_in/
+040_out*/
+*.mp4
+*.mov
+*.avi
+*.mkv
+
+# IDE & workspace files
+.gemini/
+.idea/
+.vscode/
