@@ -10,7 +10,8 @@ Pipeline Steps:
      Subpixel solar limb stabilization (R ≈ 238.5 px) and optical centering.
   2. Pre-totality Approach (pretotal.mp4 / pre_totality.mp4):
      Automatic corrupt/black intervalometer frame filtering, time-lapse acceleration
-     to target duration (default: 30.0s), and solar limb stabilization (R ≈ 238.0 px).
+     to target duration (default: 30.0s), solar limb stabilization (R ≈ 238.0 px),
+     dynamic White Balance (chromaticity) equalization, and temporal luminance continuity smoothing.
   3. Totality (total.mp4 / totality.mp4):
      Lunar silhouette and solar corona tracking (R ≈ 246.0 px) at 30 fps,
      inheriting exact C2 transition boundary alignment (+12.5 px, +7.5 px).
@@ -35,6 +36,7 @@ import cv2
 import numpy as np
 from tqdm import tqdm
 from scipy.optimize import minimize
+from scipy.ndimage import uniform_filter1d
 
 from stabilize_eclipse import stabilize_video
 
@@ -49,8 +51,10 @@ def stabilize_and_accelerate_pre_totality(
     preset: str = "fast"
 ):
     """
-    Filters out black/corrupted frames, resamples the pre-totality sequence
-    to target_seconds, and stabilizes the solar limb to center (640, 360).
+    Filters out black/corrupted intervalometer frames, resamples the pre-totality
+    sequence to target_seconds, stabilizes the solar limb to center (640, 360),
+    equalizes camera white balance drift, and applies temporal luminance smoothing
+    to eliminate exposure dips and flicker.
     """
     print("=" * 60)
     print(f"Step 2/5: Accelerating & stabilizing pre-totality sequence to {target_seconds:.1f}s...")
@@ -144,6 +148,57 @@ def stabilize_and_accelerate_pre_totality(
         else:
             centers.append(last_valid_center)
 
+    # 4. Automatic White Balance & Temporal Luminance Continuity Equalization
+    r_means, g_means, b_means, p90_vals = [], [], [], []
+    for f in sampled_frames:
+        gray = cv2.cvtColor(f, cv2.COLOR_BGR2GRAY)
+        mask = gray > 20
+        if np.sum(mask) > 50:
+            b_means.append(float(np.mean(f[:, :, 0][mask])))
+            g_means.append(float(np.mean(f[:, :, 1][mask])))
+            r_means.append(float(np.mean(f[:, :, 2][mask])))
+            p90_vals.append(float(np.percentile(f[:, :, 2][mask], 90)))
+        else:
+            b_means.append(0.0)
+            g_means.append(0.0)
+            r_means.append(0.0)
+            p90_vals.append(0.0)
+
+    r_means = np.array(r_means)
+    g_means = np.array(g_means)
+    b_means = np.array(b_means)
+    p90_vals = np.array(p90_vals)
+
+    gr_ratio = g_means / np.maximum(r_means, 1.0)
+    br_ratio = b_means / np.maximum(r_means, 1.0)
+
+    # Valid baseline reference frames (outside white balance shift where G/R < 0.75 and B/R < 0.65)
+    valid_color_mask = (gr_ratio < 0.75) & (br_ratio < 0.65) & (r_means > 10)
+    x_valid_color = np.where(valid_color_mask)[0]
+
+    if len(x_valid_color) > 10:
+        target_gr = np.interp(np.arange(len(sampled_frames)), x_valid_color, gr_ratio[x_valid_color])
+        target_br = np.interp(np.arange(len(sampled_frames)), x_valid_color, br_ratio[x_valid_color])
+    else:
+        target_gr = gr_ratio
+        target_br = br_ratio
+
+    # Temporal Luminance Smoothing (eliminates sudden exposure dips/jumps)
+    cutoff_fade = int(0.95 * len(sampled_frames))  # preserve natural diamond ring fade at very end
+    robust_p90 = p90_vals.copy()
+    for idx in range(10, cutoff_fade):
+        local_med = float(np.median(p90_vals[max(0, idx-20) : min(cutoff_fade, idx+21)]))
+        if p90_vals[idx] < 0.75 * local_med or p90_vals[idx] > 1.35 * local_med:
+            robust_p90[idx] = local_med
+
+    smooth_lum_target = uniform_filter1d(robust_p90, size=15)
+    smooth_lum_target[cutoff_fade:] = p90_vals[cutoff_fade:]
+
+    lum_scales = np.ones(len(sampled_frames), dtype=np.float32)
+    for idx in range(len(sampled_frames)):
+        if p90_vals[idx] > 20 and idx < cutoff_fade:
+            lum_scales[idx] = smooth_lum_target[idx] / max(p90_vals[idx], 1.0)
+
     ffmpeg_cmd = [
         'ffmpeg', '-y',
         '-loglevel', 'error',
@@ -167,11 +222,26 @@ def stabilize_and_accelerate_pre_totality(
     ]
     proc = subprocess.Popen(ffmpeg_cmd, stdin=subprocess.PIPE, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
 
-    for frame, (cx, cy) in zip(sampled_frames, centers):
+    for idx, (frame, (cx, cy)) in enumerate(zip(sampled_frames, centers)):
+        corr_frame = frame.astype(np.float32)
+
+        # 1. White balance chromaticity correction
+        if not valid_color_mask[idx] and r_means[idx] > 10:
+            curr_g_scale = target_gr[idx] / max(gr_ratio[idx], 1e-4)
+            curr_b_scale = target_br[idx] / max(br_ratio[idx], 1e-4)
+            corr_frame[:, :, 0] *= curr_b_scale
+            corr_frame[:, :, 1] *= curr_g_scale
+
+        # 2. Temporal Luminance Continuity correction
+        if lum_scales[idx] != 1.0:
+            corr_frame *= lum_scales[idx]
+
+        frame_to_warp = np.clip(corr_frame, 0, 255).astype(np.uint8)
+
         dx = 640.0 - cx
         dy = 360.0 - cy
         M = np.array([[1.0, 0.0, dx], [0.0, 1.0, dy]], dtype=np.float32)
-        warped = cv2.warpAffine(frame, M, (w, h), flags=cv2.INTER_LANCZOS4, borderMode=cv2.BORDER_CONSTANT, borderValue=(0, 0, 0))
+        warped = cv2.warpAffine(frame_to_warp, M, (w, h), flags=cv2.INTER_LANCZOS4, borderMode=cv2.BORDER_CONSTANT, borderValue=(0, 0, 0))
         proc.stdin.write(warped.tobytes())
 
     proc.stdin.close()

@@ -88,13 +88,18 @@ This anchors the geometric solar center to the optical center $(640, 360)$ with 
 ### 3. Automatic Black/Corrupted Frame Filtering
 High-speed camera intervalometers often produce corrupted or underexposed black frames. During pre-totality processing, the pipeline automatically detects and drops non-illuminated frames before uniformly resampling the sequence to the target time-lapse duration (default: 30.0 seconds).
 
-### 4. Transition Boundary Center Inheritance ($C_2$ & $C_3$)
+### 4. Dynamic White Balance & Temporal Luminance Smoothing
+Raw DSLR and intervalometer footage frequently experiences sudden camera auto-exposure and white balance shifts as the total solar flux drops. The pipeline incorporates automatic radiometric normalization:
+- **Dynamic Chromaticity Equalization**: Automatically detects green/blue channel surges (preventing the sun from turning whitish/washed out) and rescales them to match the physical baseline warmth of the solar filter ($\text{R/B} \approx 1.97$, $\text{G/R} \approx 0.62$).
+- **Temporal Luminance Smoothing**: Tracks the 90th percentile intensity of the solar photosphere across all frames and filters out sudden camera exposure dips/jumps via robust median and moving average filters, providing seamless, flicker-free brightness continuity throughout the approach to totality.
+
+### 5. Transition Boundary Center Inheritance ($C_2$ & $C_3$)
 Because totality tracking is centered on the **lunar silhouette** ($R = 246.0\text{ px}$) rather than the hidden solar center, boundary registration shifts occur at Second Contact ($C_2$) and Third Contact ($C_3$).
 - **Transition 1 ($C_2$)**: Totality inherits a $(+12.5\text{ px}, +7.5\text{ px})$ offset to perfectly match the pre-totality crescent.
 - **Transition 2 ($C_3$)**: Partial egress inherits a $(+35.0\text{ px}, +24.0\text{ px})$ offset to align with totality's end frame.
 - **Result**: Zero jumping, zero ghosting, and razor-sharp boundary transitions.
 
-### 5. Configurable Cinematic Transitions
+### 6. Configurable Cinematic Transitions
 The assembly supports three distinct transition modes:
 - **`fade_to_black` (Default)**:
   1. Freeze on last frame of clip A (`freeze_before`, default `1.0s`).
