@@ -169,7 +169,35 @@ python 020_src/build_full_eclipse.py \
   --freeze-after 0.5
 ```
 
-### 3. Generating a Lightweight 30-Second Compact Video (for Easy Sharing)
+### 3. Generating High-Resolution Composite Mosaics (UHD 3840x3840)
+To create high-resolution photographic composite artwork displaying the full chronological progression of the eclipse:
+```bash
+# Generate all layouts at once (circle, diagonal, horizontal, arc):
+python 020_src/create_eclipse_composite.py --layout all
+
+# Circular wreath progression (default: 3840x3840 UHD squared):
+python 020_src/create_eclipse_composite.py --layout circle --phases 15
+
+# Circular wreath with Totality placed in the center:
+python 020_src/create_eclipse_composite.py --layout circle --center-totality
+
+# Diagonal progression from bottom-left to top-right:
+python 020_src/create_eclipse_composite.py --layout diagonal --phases 15
+
+# Parabolic arc trajectory across the canvas:
+python 020_src/create_eclipse_composite.py --layout arc --phases 15
+
+# Custom resolution (e.g. 4K 16:9 widescreen or 8K):
+python 020_src/create_eclipse_composite.py --layout horizontal --width 3840 --height 2160
+```
+
+#### Composite Key Features:
+- **Subpixel Lanczos-4 Resampling**: Solar disk patches are extracted from stabilized video and upscaled with antialiasing.
+- **Radial Feather Alpha Blending**: Soft edge blending ($15-25\text{ px}$) ensures seamless overlapping without rectangular border artifacts on deep black backgrounds.
+- **Color & Photosphere Luminance Normalization**: Equalizes solar filter chromaticity ($\text{R/B} \approx 1.97$, $\text{G/R} \approx 0.62$) and uniform solar luminescence across ingress, pre-totality, and egress.
+- **Dual Export**: Automatically saves both lossless `.png` (master quality) and high-Q `.jpg` (sharing/printing).
+
+### 4. Generating a Lightweight 30-Second Compact Video (for Easy Sharing)
 To generate an accelerated, universally compatible 30-second version in H.264 (~1.19 MB in 720p HD) for quick distribution via messaging apps (WhatsApp, Telegram), email, or social media:
 ```bash
 # Generate 30s accelerated H.264 version (default: 040_out/full_eclipse_30s.mp4):
@@ -185,13 +213,13 @@ python 020_src/create_compact_clip.py \
   --crf 22
 ```
 
-### 4. Re-processing from Scratch
+### 5. Re-processing from Scratch
 If input source videos are modified, force a full re-stabilization pass:
 ```bash
 python 020_src/build_full_eclipse.py --force-all
 ```
 
-### 5. Standalone Video Stabilization
+### 6. Standalone Video Stabilization
 To stabilize any individual solar eclipse video file:
 ```bash
 python 020_src/stabilize_eclipse.py \
@@ -217,16 +245,21 @@ eclipse_assembler/
 ├── 020_src/                          # Python source code
 │   ├── build_full_eclipse.py         # Master pipeline and assembly script
 │   ├── create_compact_clip.py        # 30s accelerated lightweight generator
+│   ├── create_eclipse_composite.py   # ★ High-resolution UHD composite mosaic generator
 │   ├── stabilize_eclipse.py          # Core solar limb subpixel stabilizer
 │   └── stabilize_full_film.py        # Global 2-pass master film stabilizer
 │
-├── 040_out/                          # Generated stabilized output videos
+├── 040_out/                          # Generated stabilized output videos and artwork
 │   ├── partial_ingress.mp4           # Stabilized partial ingress (8.90s)
 │   ├── pre_totality.mp4              # Accelerated & stabilized pre-totality (30.00s)
 │   ├── totality.mp4                  # Stabilized totality (96.93s)
 │   ├── partial_egress.mp4            # Stabilized partial egress (8.17s)
 │   ├── full_eclipse.mp4              # ★ Complete master film (150.03s / 11.34 MB)
-│   └── full_eclipse_30s.mp4          # ⚡ Compact 30s accelerated film (30.00s / 1.19 MB)
+│   ├── full_eclipse_30s.mp4          # ⚡ Compact 30s accelerated film (30.00s / 1.19 MB)
+│   ├── eclipse_composite_circle_3840p.png   # 🖼️ UHD Circular composite mosaic (3840x3840)
+│   ├── eclipse_composite_diagonal_3840p.png # 🖼️ UHD Diagonal composite progression (3840x3840)
+│   ├── eclipse_composite_horizontal_3840p.png # 🖼️ UHD Horizontal progression (3840x3840)
+│   └── eclipse_composite_arc_3840p.png      # 🖼️ UHD Celestial arc composite (3840x3840)
 │
 └── README.md                         # Project documentation
 ```
@@ -235,14 +268,16 @@ eclipse_assembler/
 
 ## 📊 Summary of Master Video Outputs
 
-| Output Video | Resolution | Frame Rate | Frames | Duration | File Size | Description |
-| :--- | :--- | :--- | :--- | :--- | :--- | :--- |
-| **`partial_ingress.mp4`** | 1280x720 | 30.0 fps | 267 | 8.90s | 1.61 MB | Stabilized partial ingress ($R = 238.5\text{ px}$) |
-| **`pre_totality.mp4`** | 1280x720 | 30.0 fps | 900 | 30.00s | 1.93 MB | Accelerated 30s pre-totality approach (0 black frames) |
-| **`totality.mp4`** | 1280x720 | 30.0 fps | 2,908 | 96.93s | 11.82 MB | Totality & corona with $C_2$ center inheritance |
-| **`partial_egress.mp4`** | 1280x720 | 30.1 fps | 246 | 8.17s | 1.22 MB | Stabilized partial egress with $C_3$ center inheritance |
-| **`full_eclipse.mp4`** | **1280x720** | **30.0 fps** | **4,501** | **150.03s** | **11.34 MB** | 🎬 **Master film with cinematic `fade_to_black` transitions** |
-| **`full_eclipse_30s.mp4`** | **1280x720** | **30.0 fps** | **900** | **30.00s** | **1.19 MB** | ⚡ **Accelerated 30s compact video in H.264 for universal sharing** |
+| Output Asset | Resolution | Frame Rate / Type | Duration / Size | Description |
+| :--- | :--- | :--- | :--- | :--- |
+| **`partial_ingress.mp4`** | 1280x720 | 30.0 fps | 8.90s (1.61 MB) | Stabilized partial ingress ($R = 238.5\text{ px}$) |
+| **`pre_totality.mp4`** | 1280x720 | 30.0 fps | 30.00s (1.93 MB) | Accelerated 30s pre-totality approach (0 black frames) |
+| **`totality.mp4`** | 1280x720 | 30.0 fps | 96.93s (11.82 MB) | Totality & corona with $C_2$ center inheritance |
+| **`partial_egress.mp4`** | 1280x720 | 30.1 fps | 8.17s (1.22 MB) | Stabilized partial egress with $C_3$ center inheritance |
+| **`full_eclipse.mp4`** | **1280x720** | **30.0 fps** | **150.03s (11.34 MB)** | 🎬 **Master film with cinematic `fade_to_black` transitions** |
+| **`full_eclipse_30s.mp4`** | **1280x720** | **30.0 fps** | **30.00s (1.19 MB)** | ⚡ **Accelerated 30s compact video in H.264 for universal sharing** |
+| **`eclipse_composite_circle_3840p.png`** | **3840x3840** | **PNG / JPG** | **3.03 MB / 0.72 MB** | 🖼️ **UHD Circular wreath mosaic artwork** |
+| **`eclipse_composite_diagonal_3840p.png`**| **3840x3840** | **PNG / JPG** | **2.02 MB / 0.56 MB** | 🖼️ **UHD Diagonal timeline progression (bottom-left to top-right)** |
 
 ---
 
