@@ -542,6 +542,7 @@ def resolve_input_file(in_dir: str, primary_name: str, alt_names: list[str]) -> 
 
 
 def build_pipeline(
+    pretotal_duration: float = 15.0,
     transition_type: str = "fade_to_black",
     freeze_before: float = 1.0,
     fade_out: float = 0.5,
@@ -567,6 +568,17 @@ def build_pipeline(
     partial_egress_out = os.path.join(out_dir, "partial_egress.mp4")
     final_film = output_path
 
+    # Check existing pre_totality duration to auto-regenerate if duration changed
+    pretotal_needs_rebuild = force_all or not is_valid_video(pre_totality_out)
+    if not pretotal_needs_rebuild and os.path.exists(pre_totality_out):
+        cap_chk = cv2.VideoCapture(pre_totality_out)
+        curr_frames = int(cap_chk.get(cv2.CAP_PROP_FRAME_COUNT))
+        curr_fps = cap_chk.get(cv2.CAP_PROP_FPS) or 30.0
+        cap_chk.release()
+        expected_frames = int(round(pretotal_duration * curr_fps))
+        if abs(curr_frames - expected_frames) > 5:
+            pretotal_needs_rebuild = True
+
     # Step 1: Partial Ingress
     if os.path.exists(partial_ingress_src) and (force_all or not is_valid_video(partial_ingress_out)):
         print("=" * 60)
@@ -577,8 +589,8 @@ def build_pipeline(
         print(f"Step 1/5: Using cached partial ingress video at {partial_ingress_out}")
 
     # Step 2: Pre-totality
-    if os.path.exists(pre_totality_src) and (force_all or not is_valid_video(pre_totality_out)):
-        stabilize_and_accelerate_pre_totality(pre_totality_src, pre_totality_out, target_seconds=30.0, target_fps=30.0, solar_radius=238.0)
+    if os.path.exists(pre_totality_src) and pretotal_needs_rebuild:
+        stabilize_and_accelerate_pre_totality(pre_totality_src, pre_totality_out, target_seconds=pretotal_duration, target_fps=30.0, solar_radius=238.0)
     else:
         print(f"Step 2/5: Using cached pre-totality video at {pre_totality_out}")
 
@@ -614,6 +626,8 @@ def build_pipeline(
 
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(description="Automated Solar Eclipse 2026 Processing & Assembly Pipeline")
+    parser.add_argument("--pretotal-duration", "-p", type=float, default=15.0,
+                        help="Target duration in seconds for pre-totality sequence (default: 15.0s)")
     parser.add_argument("--transition-type", type=str, choices=["fade_to_black", "hard", "crossfade"], default="fade_to_black",
                         help="Transition style: 'fade_to_black' (freeze A + dip to black + freeze B), 'hard' (instant cut with freezes), or 'crossfade' (dissolve with freezes). Default: fade_to_black")
     parser.add_argument("--freeze-before", type=float, default=1.0,
@@ -635,6 +649,7 @@ if __name__ == "__main__":
     args = parser.parse_args()
 
     build_pipeline(
+        pretotal_duration=args.pretotal_duration,
         transition_type=args.transition_type,
         freeze_before=args.freeze_before,
         fade_out=args.fade_out,
