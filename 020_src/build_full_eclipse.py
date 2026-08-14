@@ -23,7 +23,7 @@ Pipeline Steps:
      - 'hard': Freeze A -> Instant cut -> Freeze B
      - 'crossfade': Freeze A -> Smooth cross-dissolve -> Freeze B
 
-Authors: Fernando (nandoide) & Antigravity (Google Gemini 2.5 Flash Thinking)
+Authors: Fernando (nandoide) & Antigravity (Google Gemini 3.6 Flash High)
 Workspace: eclipse_assembler
 """
 

@@ -12,7 +12,7 @@ Features:
   - Highly optimized H.264/H.265 compression for compact file size (~2-4 MB) and universal playback compatibility.
   - Fast streaming execution via OpenCV & FFmpeg.
 
-Authors: Fernando (nandoide) & Antigravity (Google Gemini 2.5 Flash Thinking)
+Authors: Fernando (nandoide) & Antigravity (Google Gemini 3.6 Flash High)
 Workspace: eclipse_assembler
 """
 

@@ -245,6 +245,6 @@ eclipse_assembler/
 Developed for high-precision astronomical astrophotography and eclipse video processing.
 
 - **Project Lead & Domain Guidance**: Fernando ([@nandoide](https://github.com/nandoide))
-- **AI Coding Agent & Computer Vision Architecture**: Antigravity (Google Gemini 2.5 Flash Thinking)
+- **AI Coding Agent & Computer Vision Architecture**: Antigravity (Google Gemini 3.6 Flash High)
 
 Code released under the MIT License.
