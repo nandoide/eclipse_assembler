@@ -170,31 +170,36 @@ python 020_src/build_full_eclipse.py \
 ```
 
 ### 3. Generating High-Resolution Composite Mosaics (UHD 3840x3840)
-To create high-resolution photographic composite artwork displaying the full chronological progression of the eclipse:
+To create ultra-high-resolution photographic composite artwork displaying the full chronological progression of the eclipse:
 ```bash
-# Generate all layouts at once (circle, diagonal, horizontal, arc):
+# Generate all 5 layouts at once (sinusoid, circle, diagonal, horizontal, arc):
 python 020_src/create_eclipse_composite.py --layout all
 
-# Circular wreath progression (default: 3840x3840 UHD squared):
-python 020_src/create_eclipse_composite.py --layout circle --phases 15
+# 1. Sinusoidal S-Curve (default: 3840x3840 UHD squared with totality at center):
+python 020_src/create_eclipse_composite.py --layout sinusoid
 
-# Circular wreath with Totality placed in the center:
-python 020_src/create_eclipse_composite.py --layout circle --center-totality
+# 2. Circular wreath progression:
+python 020_src/create_eclipse_composite.py --layout circle
 
-# Diagonal progression from bottom-left to top-right:
-python 020_src/create_eclipse_composite.py --layout diagonal --phases 15
+# 3. Diagonal progression from bottom-left to top-right:
+python 020_src/create_eclipse_composite.py --layout diagonal
 
-# Parabolic arc trajectory across the canvas:
-python 020_src/create_eclipse_composite.py --layout arc --phases 15
+# 4. Laser-aligned horizontal progression:
+python 020_src/create_eclipse_composite.py --layout horizontal
 
-# Custom resolution (e.g. 4K 16:9 widescreen or 8K):
-python 020_src/create_eclipse_composite.py --layout horizontal --width 3840 --height 2160
+# 5. Celestial parabolic arc spanning full canvas height:
+python 020_src/create_eclipse_composite.py --layout arc
+
+# Custom canvas size (e.g. 4096 or 8K):
+python 020_src/create_eclipse_composite.py --layout sinusoid --size 4096
 ```
 
 #### Composite Key Features:
-- **Subpixel Lanczos-4 Resampling**: Solar disk patches are extracted from stabilized video and upscaled with antialiasing.
-- **Radial Feather Alpha Blending**: Soft edge blending ($15-25\text{ px}$) ensures seamless overlapping without rectangular border artifacts on deep black backgrounds.
-- **Color & Photosphere Luminance Normalization**: Equalizes solar filter chromaticity ($\text{R/B} \approx 1.97$, $\text{G/R} \approx 0.62$) and uniform solar luminescence across ingress, pre-totality, and egress.
+- **Symmetric Totality Progression**: Captures 6 distinct totality keyframes: Ingress Baily's Beads ($C_2$, frame 30), Ingress Chromosphere $H\alpha$ arc (frame 70), Inner Corona (frame 600), Grand Wide Corona Streamers (frame 1200), Egress Chromosphere arc (frame 2700), and Egress Diamond Ring ($C_3$, frame 2850).
+- **Balanced Partial Cresents**: Omits the extreme almost-full solar disks to provide breathing room and crescent symmetry between ingress and egress.
+- **Wide Unclipped Corona Streamers**: Extracts full $1280\times1280\text{ px}$ frame areas with smooth elliptical cosine boundary feathering and noise floor clamping, allowing luminous corona streamers to expand organically into the surrounding space without rectangular artifacts.
+- **Precision Subpixel Alignment**: Employs the stabilized optical centers $(640, 360)$ directly from the video pipeline, guaranteeing laser-straight geometric alignment across all layouts.
+- **Non-Overlapping Spacing**: Uses calibrated relative disk scaling (`0.88`) ensuring clean separation between adjacent disk boundaries.
 - **Dual Export**: Automatically saves both lossless `.png` (master quality) and high-Q `.jpg` (sharing/printing).
 
 ### 4. Generating a Lightweight 30-Second Compact Video (for Easy Sharing)
@@ -256,17 +261,18 @@ eclipse_assembler/
 │   ├── partial_egress.mp4            # Stabilized partial egress (8.17s)
 │   ├── full_eclipse.mp4              # ★ Complete master film (150.03s / 11.34 MB)
 │   ├── full_eclipse_30s.mp4          # ⚡ Compact 30s accelerated film (30.00s / 1.19 MB)
+│   ├── eclipse_composite_sinusoid_3840p.png # 🖼️ UHD S-Curve composite (3840x3840)
 │   ├── eclipse_composite_circle_3840p.png   # 🖼️ UHD Circular composite mosaic (3840x3840)
 │   ├── eclipse_composite_diagonal_3840p.png # 🖼️ UHD Diagonal composite progression (3840x3840)
-│   ├── eclipse_composite_horizontal_3840p.png # 🖼️ UHD Horizontal progression (3840x3840)
-│   └── eclipse_composite_arc_3840p.png      # 🖼️ UHD Celestial arc composite (3840x3840)
+│   ├── eclipse_composite_horizontal_3840p.png # 🖼️ UHD Laser-aligned horizontal progression (3840x3840)
+│   └── eclipse_composite_arc_3840p.png      # 🖼️ UHD Full-height celestial arc composite (3840x3840)
 │
 └── README.md                         # Project documentation
 ```
 
 ---
 
-## 📊 Summary of Master Video Outputs
+## 📊 Summary of Master Output Assets
 
 | Output Asset | Resolution | Frame Rate / Type | Duration / Size | Description |
 | :--- | :--- | :--- | :--- | :--- |
@@ -276,8 +282,11 @@ eclipse_assembler/
 | **`partial_egress.mp4`** | 1280x720 | 30.1 fps | 8.17s (1.22 MB) | Stabilized partial egress with $C_3$ center inheritance |
 | **`full_eclipse.mp4`** | **1280x720** | **30.0 fps** | **150.03s (11.34 MB)** | 🎬 **Master film with cinematic `fade_to_black` transitions** |
 | **`full_eclipse_30s.mp4`** | **1280x720** | **30.0 fps** | **30.00s (1.19 MB)** | ⚡ **Accelerated 30s compact video in H.264 for universal sharing** |
-| **`eclipse_composite_circle_3840p.png`** | **3840x3840** | **PNG / JPG** | **3.03 MB / 0.72 MB** | 🖼️ **UHD Circular wreath mosaic artwork** |
-| **`eclipse_composite_diagonal_3840p.png`**| **3840x3840** | **PNG / JPG** | **2.02 MB / 0.56 MB** | 🖼️ **UHD Diagonal timeline progression (bottom-left to top-right)** |
+| **`eclipse_composite_sinusoid_3840p.png`** | **3840x3840** | **PNG / JPG** | **0.57 MB / 0.33 MB** | 🖼️ **UHD S-Curve wave composite with totality at center** |
+| **`eclipse_composite_circle_3840p.png`** | **3840x3840** | **PNG / JPG** | **2.34 MB / 0.60 MB** | 🖼️ **UHD Circular wreath mosaic with corona and beads** |
+| **`eclipse_composite_diagonal_3840p.png`**| **3840x3840** | **PNG / JPG** | **0.91 MB / 0.38 MB** | 🖼️ **UHD Diagonal progression (bottom-left to top-right)** |
+| **`eclipse_composite_horizontal_3840p.png`**| **3840x3840** | **PNG / JPG** | **0.50 MB / 0.32 MB** | 🖼️ **UHD Laser-straight horizontal midline progression** |
+| **`eclipse_composite_arc_3840p.png`** | **3840x3840** | **PNG / JPG** | **0.53 MB / 0.32 MB** | 🖼️ **UHD High celestial parabolic arc spanning full canvas** |
 
 ---
 

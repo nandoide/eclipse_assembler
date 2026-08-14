@@ -26,3 +26,4 @@ ENV/
 .gemini/
 .idea/
 .vscode/
+scratch/

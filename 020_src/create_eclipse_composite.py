@@ -1,30 +1,37 @@
 #!/usr/bin/env python3
 """
-High-Resolution Solar Eclipse Composite & Mosaic Generator (UHD Squared)
-========================================================================
+High-Resolution Solar Eclipse Composite & Mosaic Generator (UHD Squared 3840x3840)
+===================================================================================
 Generates ultra-high-resolution composite artwork capturing the complete
 progression of the 2026 total solar eclipse on a clean aesthetic canvas.
 
 Supported Layout Modes:
-  1. 'circle' (or 'ring'):
-     Solar phases arranged along a circular orbit wreath (as seen in iconic astrophotography).
-     Options for totality at the apex or as the centerpiece in the middle of the ring.
-  2. 'diagonal':
-     Progressing diagonally from left to right (e.g. bottom-left to top-right)
-     with totality anchored at the center.
-  3. 'horizontal':
-     Linear progression across the horizontal axis from left to right.
-  4. 'arc':
-     Graceful parabolic arc mirroring the Sun's trajectory across the sky.
+  1. 'sinusoid' (or 's-curve', 's'):
+     Graceful S-shaped sinusoidal wave sweeping across the square canvas with
+     grand totality at the center inflection.
+  2. 'circle' (or 'ring'):
+     Circular orbit wreath with symmetric totality apex and trimmed partials.
+  3. 'diagonal':
+     Progressing diagonally from bottom-left to top-right with expansive corona streamers.
+  4. 'horizontal':
+     Linear progression across the horizontal midline with laser-aligned centers.
+  5. 'arc':
+     Graceful parabolic arc mirroring the Sun's celestial trajectory.
 
-Features:
-  - Default UHD Squared 3840x3840 resolution (customizable).
-  - Subpixel Lanczos-4 antialiasing and soft feather alpha-masking.
-  - Automatic solar filter chromaticity equalization for uniform color warmth.
-  - Intelligent phase pacing across ingress, totality, and egress.
-  - Lossless PNG and high-quality JPEG exports.
+Totality Sequence & Symmetry:
+  - Ingress beads (frame ~30): Diamond Ring / point sources on left limb.
+  - Ingress chromosphere (frame ~70): Red H-alpha arc and prominence on left limb.
+  - Mid totality (frame ~600): Chromosphere prominence and inner corona.
+  - Grand Corona (frame ~1200): Wide outer corona streamers at peak exposure.
+  - Egress chromosphere (frame ~2700): Red H-alpha arc on right limb.
+  - Egress beads (frame ~2850): C3 Diamond Ring on right limb.
 
-Authors: Fernando (nandoide) & Antigravity (Google Gemini 3.6 Flash High)
+Alignment & Spacing:
+  - Disks use the stabilized video center (640, 360) ensuring 100% true geometric alignment.
+  - Default disk_scale_factor = 0.88 prevents circular disk overlap across all layouts,
+    providing clean margins while letting corona streamers flow into the dark space.
+
+Authors: Fernando (nandoide) & Antigravity (Google Deepmind)
 Workspace: eclipse_assembler
 """
 
@@ -34,470 +41,481 @@ import argparse
 import math
 import cv2
 import numpy as np
-from tqdm import tqdm
 
 
-def equalize_solar_color(frame: np.ndarray, target_gr: float = 0.619, target_br: float = 0.507, target_peak_r: float = 230.0) -> np.ndarray:
+# ─────────────────────────────────────────────────────────────────────────────
+# IMAGE UTILITIES
+# ─────────────────────────────────────────────────────────────────────────────
+
+def equalize_solar_color(
+    frame,
+    target_gr=0.619,
+    target_br=0.507,
+    target_peak_r=230.0
+):
     """
-    Normalizes solar filter color and photosphere brightness across all partial frames
-    to achieve a rich, consistent warm solar orange (R/B ≈ 1.97, G/R ≈ 0.62) with uniform illumination.
+    Normalizes solar filter color and photosphere brightness for all partial frames.
+    Achieves consistent warm solar orange (R/B ~1.97, G/R ~0.62).
+    Skips totality frames (black disk with corona - no red dominant area to sample).
     """
     r = frame[:, :, 2].astype(np.float32)
-    g = frame[:, :, 1].astype(np.float32)
     b = frame[:, :, 0].astype(np.float32)
-
     mask = (r > 40) & (r > b * 1.05)
     if np.count_nonzero(mask) < 200:
         return frame
 
-    peak_r = np.percentile(r[mask], 90)
-    peak_g = np.percentile(g[mask], 90)
-    peak_b = np.percentile(b[mask], 90)
+    peak_r = float(np.percentile(r[mask], 90))
+    peak_g = float(np.percentile(frame[:, :, 1].astype(np.float32)[mask], 90))
+    peak_b = float(np.percentile(b[mask], 90))
 
-    if peak_r > 10:
-        current_gr = peak_g / peak_r
-        current_br = peak_b / peak_r
+    if peak_r < 10:
+        return frame
 
-        # Luminance gain
-        lum_gain = np.clip(target_peak_r / peak_r, 0.7, 1.4)
+    current_gr = peak_g / peak_r
+    current_br = peak_b / peak_r
+    lum_gain = float(np.clip(target_peak_r / peak_r, 0.7, 1.4))
 
-        scale_r = lum_gain
-        scale_g = lum_gain * (target_gr / max(0.01, current_gr))
-        scale_b = lum_gain * (target_br / max(0.01, current_br))
-
-        out = frame.copy().astype(np.float32)
-        out[:, :, 2] = np.clip(out[:, :, 2] * scale_r, 0, 255)
-        out[:, :, 1] = np.clip(out[:, :, 1] * scale_g, 0, 255)
-        out[:, :, 0] = np.clip(out[:, :, 0] * scale_b, 0, 255)
-        return out.astype(np.uint8)
-    return frame
+    out = frame.copy().astype(np.float32)
+    out[:, :, 2] = np.clip(out[:, :, 2] * lum_gain, 0, 255)
+    out[:, :, 1] = np.clip(out[:, :, 1] * lum_gain * (target_gr / max(0.01, current_gr)), 0, 255)
+    out[:, :, 0] = np.clip(out[:, :, 0] * lum_gain * (target_br / max(0.01, current_br)), 0, 255)
+    return out.astype(np.uint8)
 
 
-def crop_solar_disk(frame: np.ndarray, crop_size: int = 560) -> np.ndarray:
+def clean_and_crop_square(frame, crop_size=1280, is_totality=False):
     """
-    Crops a square region centered on (640, 360) where the solar/lunar disk is stabilized.
+    Crops square patch around the true stabilized center (w//2, h//2),
+    applying soft noise floor and smooth border feathering.
+    Using the stabilized video frame center ensures all solar/lunar disks are
+    geometrically aligned without drift.
     """
     h, w = frame.shape[:2]
-    cx, cy = w // 2, h // 2
-    half = crop_size // 2
-    x1 = max(0, cx - half)
-    y1 = max(0, cy - half)
-    x2 = min(w, cx + half)
-    y2 = min(h, cy + half)
+    cx, cy = w // 2, h // 2  # Locked stabilized center (640, 360)
 
-    cropped = frame[y1:y2, x1:x2]
-    if cropped.shape[0] != crop_size or cropped.shape[1] != crop_size:
-        cropped = cv2.resize(cropped, (crop_size, crop_size), interpolation=cv2.INTER_LANCZOS4)
+    f_gray = cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY).astype(np.float32) if frame.ndim == 3 else frame.astype(np.float32)
+    floor_w = np.clip((f_gray - 2.5) / 6.0, 0.0, 1.0)
+
+    if is_totality:
+        # Elliptical smooth taper matching 1280x720 aspect ratio
+        Y_grid, X_grid = np.ogrid[:h, :w]
+        dx = (X_grid - cx).astype(np.float32)
+        dy = (Y_grid - cy).astype(np.float32)
+        rx, ry = 540.0, 340.0
+        ellip_dist = np.sqrt((dx / rx)**2 + (dy / ry)**2)
+        ramp = np.clip((1.0 - ellip_dist) / (1.0 - 0.70), 0.0, 1.0)
+        shape_w = 0.5 - 0.5 * np.cos(np.pi * ramp)
+        actual_crop = crop_size
+    else:
+        # 4-edge border feather for partial frames
+        Y_grid, X_grid = np.ogrid[:h, :w]
+        w_x = np.clip(X_grid / 20.0, 0.0, 1.0) * np.clip((w - 1 - X_grid) / 20.0, 0.0, 1.0)
+        w_y = np.clip(Y_grid / 20.0, 0.0, 1.0) * np.clip((h - 1 - Y_grid) / 20.0, 0.0, 1.0)
+        shape_w = w_x * w_y
+        actual_crop = min(crop_size, 720)
+
+    cleaned = (frame.astype(np.float32) * (shape_w * floor_w)[:, :, np.newaxis]).astype(np.uint8)
+
+    # Square crop around (cx, cy)
+    half = actual_crop // 2
+    padded = cv2.copyMakeBorder(cleaned, half, half, half, half, cv2.BORDER_CONSTANT, value=[0, 0, 0])
+    pcx, pcy = cx + half, cy + half
+    cropped = padded[pcy - half : pcy + half, pcx - half : pcx + half]
     return cropped
 
 
+# ─────────────────────────────────────────────────────────────────────────────
+# ECLIPSE SEQUENCE BUILDER
+# ─────────────────────────────────────────────────────────────────────────────
+
+def resolve_output_dir(out_dir):
+    if os.path.isabs(out_dir) and os.path.exists(out_dir):
+        return out_dir
+    repo_root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+    candidate = os.path.join(repo_root, out_dir)
+    if os.path.exists(candidate):
+        return candidate
+    return out_dir
+
+
 def sample_eclipse_sequence(
-    out_dir: str = "040_out",
-    num_phases: int = 15,
-    include_totality: bool = True,
-    equalize_color: bool = True,
-    totality_fraction: float = 0.45
-) -> list:
+    out_dir="040_out",
+    crop_size=1280,
+):
     """
-    Extracts representative keyframes covering the full eclipse timeline:
-    Ingress -> Totality -> Egress.
+    Extracts keyframes with trimmed extreme partial ends and full symmetric totality entry/exit:
+      - Ingress: 2 well-defined crescents (omits first full sun).
+      - Pre-totality: 2 thin crescents approaching C2.
+      - Totality: 6 symmetric keyframes (f30, f70, f600, f1200, f2700, f2850).
+      - Egress: 4 crescents exiting C3 (omits last full sun).
+    Total: 14 balanced, physically aligned keyframes.
     """
-    ingress_path = os.path.join(out_dir, "partial_ingress.mp4")
-    pre_total_path = os.path.join(out_dir, "pre_totality.mp4")
-    totality_path = os.path.join(out_dir, "totality.mp4")
-    egress_path = os.path.join(out_dir, "partial_egress.mp4")
+    resolved = resolve_output_dir(out_dir)
+    paths = {
+        "ingress":  os.path.join(resolved, "partial_ingress.mp4"),
+        "pre_tot":  os.path.join(resolved, "pre_totality.mp4"),
+        "totality": os.path.join(resolved, "totality.mp4"),
+        "egress":   os.path.join(resolved, "partial_egress.mp4"),
+    }
 
-    # If stabilized clips are in parent or root, resolve them
-    for path in [ingress_path, pre_total_path, totality_path, egress_path]:
-        if not os.path.exists(path):
-            alt_path = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), path)
-            if os.path.exists(alt_path):
-                ingress_path = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "040_out", "partial_ingress.mp4")
-                pre_total_path = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "040_out", "pre_totality.mp4")
-                totality_path = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "040_out", "totality.mp4")
-                egress_path = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "040_out", "partial_egress.mp4")
-                break
+    caps = {k: cv2.VideoCapture(v) for k, v in paths.items()}
+    counts = {k: int(c.get(cv2.CAP_PROP_FRAME_COUNT)) for k, c in caps.items()}
 
-    cap_in = cv2.VideoCapture(ingress_path)
-    cap_pre = cv2.VideoCapture(pre_total_path)
-    cap_tot = cv2.VideoCapture(totality_path)
-    cap_egr = cv2.VideoCapture(egress_path)
-
-    n_in = int(cap_in.get(cv2.CAP_PROP_FRAME_COUNT))
-    n_pre = int(cap_pre.get(cv2.CAP_PROP_FRAME_COUNT))
-    n_tot = int(cap_tot.get(cv2.CAP_PROP_FRAME_COUNT))
-    n_egr = int(cap_egr.get(cv2.CAP_PROP_FRAME_COUNT))
-
-    def read_frame(cap, idx):
-        count = int(cap.get(cv2.CAP_PROP_FRAME_COUNT))
-        if count <= 0:
+    def read_at(cap, idx, total):
+        if total <= 0:
             return None
-        cap.set(cv2.CAP_PROP_POS_FRAMES, max(0, min(count - 1, idx)))
+        cap.set(cv2.CAP_PROP_POS_FRAMES, max(0, min(total - 1, int(idx))))
         ret, f = cap.read()
         return f if ret else None
 
-    num_side = (num_phases - 1) // 2 if include_totality else num_phases // 2
-    n_in_early = max(1, num_side // 3)
-    n_in_late = num_side - n_in_early
-
     samples = []
 
-    # 1. Ingress early (partial_ingress.mp4)
-    for i in range(n_in_early):
-        frac = i / max(1, n_in_early)
-        idx = int(frac * (n_in - 1)) if n_in > 0 else 0
-        f = read_frame(cap_in, idx)
+    # 1. Ingress Partials (omitting the first full sun, starting from ~38% bite)
+    for frac in [0.38, 0.78]:
+        f = read_at(caps["ingress"], frac * (counts["ingress"] - 1), counts["ingress"])
         if f is not None:
-            if equalize_color:
-                f = equalize_solar_color(f)
-            samples.append(("ingress", crop_solar_disk(f)))
+            f = equalize_solar_color(f)
+            samples.append({"phase": "partial", "label": "ingress", "img": clean_and_crop_square(f, crop_size=crop_size, is_totality=False)})
 
-    # 2. Ingress late (pre_totality.mp4)
-    for i in range(n_in_late):
-        frac = (i + 0.5) / n_in_late
-        curv_frac = frac ** 1.3
-        idx = min(n_pre - 1, int(curv_frac * (n_pre - 1))) if n_pre > 0 else 0
-        f = read_frame(cap_pre, idx)
+    # 2. Pre-Totality Thin Crescents
+    for frac in [0.38, 0.78]:
+        f = read_at(caps["pre_tot"], frac * (counts["pre_tot"] - 1), counts["pre_tot"])
         if f is not None:
-            if equalize_color:
-                f = equalize_solar_color(f)
-            samples.append(("pre_totality", crop_solar_disk(f)))
+            f = equalize_solar_color(f)
+            samples.append({"phase": "partial", "label": "pre_totality", "img": clean_and_crop_square(f, crop_size=crop_size, is_totality=False)})
 
-    # 3. Totality (totality.mp4)
-    if include_totality and n_tot > 0:
-        idx = int(n_tot * np.clip(totality_fraction, 0.0, 1.0))
-        f = read_frame(cap_tot, idx)
+    # 3. Totality Keyframes (symmetric entrance f30, f70 -> grand corona -> egress f2700, f2850)
+    tot_indices = [
+        (30,   "ingress_beads"),
+        (70,   "ingress_chromosphere"),
+        (600,  "inner_corona"),
+        (1200, "grand_corona"),
+        (2700, "egress_chromosphere"),
+        (2850, "egress_beads"),
+    ]
+    for fi, label in tot_indices:
+        f = read_at(caps["totality"], fi, counts["totality"])
         if f is not None:
-            samples.append(("totality", crop_solar_disk(f)))
+            samples.append({"phase": "totality", "label": label, "img": clean_and_crop_square(f, crop_size=crop_size, is_totality=True)})
 
-    # 4. Egress (partial_egress.mp4)
-    for i in range(num_side):
-        frac = i / max(1, num_side - 1)
-        curv_frac = (1.0 - frac) ** 1.3
-        idx = min(n_egr - 1, int((1.0 - curv_frac) * (n_egr - 1))) if n_egr > 0 else 0
-        f = read_frame(cap_egr, idx)
+    # 4. Egress Partials (starting right after C3, ending at ~65% bite without last full sun)
+    for frac in [0.15, 0.35, 0.55, 0.75]:
+        f = read_at(caps["egress"], frac * (counts["egress"] - 1), counts["egress"])
         if f is not None:
-            if equalize_color:
-                f = equalize_solar_color(f)
-            samples.append(("egress", crop_solar_disk(f)))
+            f = equalize_solar_color(f)
+            samples.append({"phase": "partial", "label": "egress", "img": clean_and_crop_square(f, crop_size=crop_size, is_totality=False)})
 
-    cap_in.release()
-    cap_pre.release()
-    cap_tot.release()
-    cap_egr.release()
+    for c in caps.values():
+        c.release()
 
     return samples
 
 
-def render_disk_patch(
-    canvas: np.ndarray,
-    img: np.ndarray,
-    center_x: int,
-    center_y: int,
-    disk_size: int,
-    feather_px: float = 15.0
-):
+# ─────────────────────────────────────────────────────────────────────────────
+# RENDERING WITH UNIFIED DISK SCALE & EXPANDED CORONA
+# ─────────────────────────────────────────────────────────────────────────────
+
+def render_consistent_scale(samples, positions, canvas_size=3840, disk_scale_factor=0.88):
     """
-    Renders a single solar disk image onto the canvas with soft feathered alpha blending.
-    """
-    canvas_h, canvas_w = canvas.shape[:2]
-    resized = cv2.resize(img, (disk_size, disk_size), interpolation=cv2.INTER_LANCZOS4)
-
-    half = disk_size // 2
-    Y, X = np.ogrid[:disk_size, :disk_size]
-    dist_from_center = np.sqrt((X - half)**2 + (Y - half)**2)
-    mask = np.clip((half - dist_from_center) / max(1.0, feather_px), 0.0, 1.0)
-    mask = np.repeat(mask[:, :, np.newaxis], 3, axis=2)
-
-    x1 = center_x - half
-    y1 = center_y - half
-    x2 = x1 + disk_size
-    y2 = y1 + disk_size
-
-    src_x1 = max(0, -x1)
-    src_y1 = max(0, -y1)
-    src_x2 = disk_size - max(0, x2 - canvas_w)
-    src_y2 = disk_size - max(0, y2 - canvas_h)
-
-    dst_x1 = max(0, x1)
-    dst_y1 = max(0, y1)
-    dst_x2 = min(canvas_w, x2)
-    dst_y2 = min(canvas_h, y2)
-
-    if dst_x2 > dst_x1 and dst_y2 > dst_y1:
-        patch = resized[src_y1:src_y2, src_x1:src_x2].astype(np.float32)
-        m = mask[src_y1:src_y2, src_x1:src_x2]
-        target = canvas[dst_y1:dst_y2, dst_x1:dst_x2].astype(np.float32)
-
-        # Maximum intensity blend ensures seamless fusion with zero black rectangular seams
-        blended = np.maximum(target, patch * m)
-        canvas[dst_y1:dst_y2, dst_x1:dst_x2] = np.clip(blended, 0, 255).astype(np.uint8)
-
-
-def generate_circular_composite(
-    samples: list,
-    canvas_size: int = 3840,
-    orbit_radius: int = 1350,
-    disk_size: int = 740,
-    direction: str = "ccw",
-    start_angle_deg: float = -90.0,
-    center_totality: bool = False
-) -> np.ndarray:
-    """
-    Generates a circular wreath composite image (3840x3840).
-    """
-    canvas = np.zeros((canvas_size, canvas_size, 3), dtype=np.uint8)
-    cx, cy = canvas_size // 2, canvas_size // 2
-
-    totality_img = None
-    ring_samples = []
-
-    for label, img in samples:
-        if label == "totality" and center_totality:
-            totality_img = img
-        else:
-            ring_samples.append((label, img))
-
-    n = len(ring_samples)
-    start_rad = math.radians(start_angle_deg)
-    step_sign = 1.0 if direction.lower() == "ccw" else -1.0
-
-    for i, (label, img) in enumerate(ring_samples):
-        theta = start_rad + step_sign * (2 * math.pi * i) / n
-        px = int(round(cx + orbit_radius * math.cos(theta)))
-        py = int(round(cy - orbit_radius * math.sin(theta)))
-
-        render_disk_patch(canvas, img, px, py, disk_size)
-
-    # If totality is placed in center
-    if center_totality and totality_img is not None:
-        center_disk_size = int(disk_size * 1.25)
-        render_disk_patch(canvas, totality_img, cx, cy, center_disk_size, feather_px=25.0)
-
-    return canvas
-
-
-def generate_diagonal_composite(
-    samples: list,
-    canvas_size: int = 3840,
-    disk_size: int = 620,
-    direction: str = "bottom_left_to_top_right",
-    margin: int = 400
-) -> np.ndarray:
-    """
-    Generates a diagonal progression composite image (3840x3840).
+    Renders all sequence samples with 1:1 consistent disk diameters on the canvas.
+    Totality crops naturally extend their wide corona streamers across the canvas
+    and blend onto neighboring black background seamlessly with np.maximum.
+    disk_scale_factor = 0.88 ensures no overlap between adjacent disk circles.
     """
     canvas = np.zeros((canvas_size, canvas_size, 3), dtype=np.uint8)
     n = len(samples)
+    if n <= 1:
+        return canvas
 
-    if direction == "bottom_left_to_top_right":
-        x_start, y_start = margin, canvas_size - margin
-        x_end, y_end = canvas_size - margin, margin
-    else:  # top_left_to_bottom_right
-        x_start, y_start = margin, margin
-        x_end, y_end = canvas_size - margin, canvas_size - margin
+    pts = np.array(positions, dtype=np.float32)
+    min_dist = float("inf")
+    for i in range(n):
+        for j in range(i + 1, n):
+            d = float(np.linalg.norm(pts[i] - pts[j]))
+            if d < min_dist:
+                min_dist = d
 
-    for i, (label, img) in enumerate(samples):
-        t = i / max(1, n - 1)
-        px = int(round(x_start + t * (x_end - x_start)))
-        py = int(round(y_start + t * (y_end - y_start)))
+    target_disk_diameter = min_dist * disk_scale_factor
+    scale = target_disk_diameter / 475.0  # Disk diameter in raw crops is ~475px
 
-        # Slightly enlarge totality frame for dramatic emphasis
-        current_disk_size = int(disk_size * 1.15) if label == "totality" else disk_size
-        render_disk_patch(canvas, img, px, py, current_disk_size)
+    for i, s in enumerate(samples):
+        px, py = positions[i]
+        img = s["img"]
+        ch, cw = img.shape[:2]
+        pw, ph = int(round(cw * scale)), int(round(ch * scale))
+        resized = cv2.resize(img, (pw, ph), interpolation=cv2.INTER_LANCZOS4)
+
+        half_w, half_h = pw // 2, ph // 2
+        x1, y1 = px - half_w, py - half_h
+        x2, y2 = x1 + pw, y1 + ph
+
+        src_x1 = max(0, -x1); src_y1 = max(0, -y1)
+        src_x2 = pw - max(0, x2 - canvas_size)
+        src_y2 = ph - max(0, y2 - canvas_size)
+        dst_x1 = max(0, x1); dst_y1 = max(0, y1)
+        dst_x2 = min(canvas_size, x2); dst_y2 = min(canvas_size, y2)
+
+        if dst_x2 > dst_x1 and dst_y2 > dst_y1:
+            roi = resized[src_y1:src_y2, src_x1:src_x2]
+            canvas[dst_y1:dst_y2, dst_x1:dst_x2] = np.maximum(
+                canvas[dst_y1:dst_y2, dst_x1:dst_x2],
+                roi
+            )
 
     return canvas
 
 
-def generate_horizontal_composite(
-    samples: list,
-    canvas_size: int = 3840,
-    disk_size: int = 600,
-    margin: int = 350
-) -> np.ndarray:
+# ─────────────────────────────────────────────────────────────────────────────
+# LAYOUT ENGINES
+# ─────────────────────────────────────────────────────────────────────────────
+
+def generate_circular_composite(
+    samples,
+    canvas_size=3840,
+    orbit_radius=None,
+    direction="ccw",
+    start_angle_deg=270.0,
+    disk_scale_factor=0.88,
+):
+    """Circular wreath layout with clean non-overlapping disks and wide corona."""
+    cx, cy = canvas_size // 2, canvas_size // 2
+    if orbit_radius is None:
+        orbit_radius = int(canvas_size * 0.365)
+
+    n = len(samples)
+    sign = 1.0 if direction.lower() == "ccw" else -1.0
+    start_rad = math.radians(start_angle_deg)
+
+    positions = []
+    for i in range(n):
+        theta = start_rad + sign * (2 * math.pi * i) / n
+        px = int(round(cx + orbit_radius * math.cos(theta)))
+        py = int(round(cy - orbit_radius * math.sin(theta)))
+        positions.append((px, py))
+
+    return render_consistent_scale(samples, positions, canvas_size=canvas_size, disk_scale_factor=disk_scale_factor)
+
+
+def generate_sinusoid_composite(
+    samples,
+    canvas_size=3840,
+    margin=350,
+    amplitude=900,
+    disk_scale_factor=0.88,
+):
     """
-    Generates a horizontal progression composite across the canvas.
+    Sinusoidal S-curve layout sweeping across the canvas.
+    Ingress rises into an upper crest, passes through grand totality at the center,
+    dips into a lower trough, and egress rises back to the right margin.
     """
-    canvas = np.zeros((canvas_size, canvas_size, 3), dtype=np.uint8)
     n = len(samples)
     cy = canvas_size // 2
 
-    for i, (label, img) in enumerate(samples):
+    positions = []
+    for i in range(n):
         t = i / max(1, n - 1)
         px = int(round(margin + t * (canvas_size - 2 * margin)))
-        py = cy
+        py = int(round(cy - amplitude * math.sin(2 * math.pi * t)))
+        positions.append((px, py))
 
-        current_disk_size = int(disk_size * 1.15) if label == "totality" else disk_size
-        render_disk_patch(canvas, img, px, py, current_disk_size)
+    return render_consistent_scale(samples, positions, canvas_size=canvas_size, disk_scale_factor=disk_scale_factor)
 
-    return canvas
+
+def generate_diagonal_composite(
+    samples,
+    canvas_size=3840,
+    direction="bottom_left_to_top_right",
+    margin=380,
+    disk_scale_factor=0.88,
+):
+    """Diagonal progression from bottom-left to top-right with non-overlapping disks."""
+    n = len(samples)
+    if direction == "bottom_left_to_top_right":
+        x_start, y_start = margin, canvas_size - margin
+        x_end,   y_end   = canvas_size - margin, margin
+    else:
+        x_start, y_start = margin, margin
+        x_end,   y_end   = canvas_size - margin, canvas_size - margin
+
+    positions = []
+    for i in range(n):
+        t  = i / max(1, n - 1)
+        px = int(round(x_start + t * (x_end - x_start)))
+        py = int(round(y_start + t * (y_end - y_start)))
+        positions.append((px, py))
+
+    return render_consistent_scale(samples, positions, canvas_size=canvas_size, disk_scale_factor=disk_scale_factor)
+
+
+def generate_horizontal_composite(
+    samples,
+    canvas_size=3840,
+    margin=350,
+    disk_scale_factor=0.88,
+):
+    """Horizontal left-to-right progression with laser-aligned centers and clean spacing."""
+    n  = len(samples)
+    cy = canvas_size // 2
+
+    positions = [
+        (int(round(margin + (i / max(1, n - 1)) * (canvas_size - 2 * margin))), cy)
+        for i in range(n)
+    ]
+
+    return render_consistent_scale(samples, positions, canvas_size=canvas_size, disk_scale_factor=disk_scale_factor)
 
 
 def generate_arc_composite(
-    samples: list,
-    canvas_size: int = 3840,
-    disk_size: int = 620,
-    margin: int = 380,
-    arc_height: float = 0.5
-) -> np.ndarray:
+    samples,
+    canvas_size=3840,
+    margin_x=350,
+    margin_bot=350,
+    margin_top=420,
+    disk_scale_factor=0.88,
+):
     """
-    Generates a celestial arc progression composite across the sky.
+    Celestial parabolic arc progression reaching high into the upper frame,
+    utilizing the full vertical and horizontal canvas expanse with grand totality crowning the apex.
     """
-    canvas = np.zeros((canvas_size, canvas_size, 3), dtype=np.uint8)
     n = len(samples)
-
-    for i, (label, img) in enumerate(samples):
-        t = i / max(1, n - 1)
-        px = int(round(margin + t * (canvas_size - 2 * margin)))
-        
-        # Parabolic arc: normalized t in [-1, 1]
+    positions = []
+    y_bot = canvas_size - margin_bot
+    for i in range(n):
+        t      = i / max(1, n - 1)
+        px     = int(round(margin_x + t * (canvas_size - 2 * margin_x)))
         t_norm = (t - 0.5) * 2.0
-        py = int(round((canvas_size - margin) - (1.0 - t_norm**2) * (canvas_size * arc_height)))
+        py     = int(round(y_bot - (1.0 - t_norm ** 2) * (y_bot - margin_top)))
+        positions.append((px, py))
 
-        current_disk_size = int(disk_size * 1.15) if label == "totality" else disk_size
-        render_disk_patch(canvas, img, px, py, current_disk_size)
+    return render_consistent_scale(samples, positions, canvas_size=canvas_size, disk_scale_factor=disk_scale_factor)
 
-    return canvas
 
+# ─────────────────────────────────────────────────────────────────────────────
+# MASTER BUILD FUNCTION
+# ─────────────────────────────────────────────────────────────────────────────
 
 def build_composite(
-    layout: str = "circle",
-    canvas_size: int = 3840,
-    num_phases: int = 15,
-    disk_size: int = None,
-    orbit_radius: int = None,
-    direction: str = None,
-    center_totality: bool = False,
-    out_dir: str = "040_out",
-    output_path: str = None,
-    totality_fraction: float = 0.45
+    layout="sinusoid",
+    canvas_size=3840,
+    orbit_radius=None,
+    direction=None,
+    disk_scale_factor=0.88,
+    out_dir="040_out",
+    output_path=None,
 ):
-    repo_root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
-    resolved_out_dir = os.path.join(repo_root, out_dir) if not os.path.isabs(out_dir) else out_dir
-    os.makedirs(resolved_out_dir, exist_ok=True)
+    resolved_out = resolve_output_dir(out_dir)
+    os.makedirs(resolved_out, exist_ok=True)
 
     print("=" * 65)
     print(f"ECLIPSE COMPOSITE GENERATOR (UHD Squared {canvas_size}x{canvas_size})")
     print("=" * 65)
-    print(f"  Layout Mode     : {layout.upper()}")
-    print(f"  Total Phases    : {num_phases}")
-    print(f"  Resolution      : {canvas_size}x{canvas_size} px")
-    print(f"  Center Totality : {center_totality}")
+    print(f"  Layout Mode       : {layout.upper()}")
+    print(f"  Resolution        : {canvas_size}x{canvas_size} px")
+    print(f"  Disk Scale Factor : {disk_scale_factor:.2f}")
 
     samples = sample_eclipse_sequence(
-        out_dir=resolved_out_dir,
-        num_phases=num_phases,
-        include_totality=True,
-        equalize_color=True,
-        totality_fraction=totality_fraction
+        out_dir=resolved_out,
+        crop_size=1280,
     )
-    print(f"  Extracted       : {len(samples)} stabilized keyframes")
+    n_tot_got  = sum(1 for s in samples if s["phase"] == "totality")
+    n_part_got = sum(1 for s in samples if s["phase"] == "partial")
+    print(f"  Frames loaded     : {len(samples)} total ({n_part_got} partial, {n_tot_got} totality)")
 
-    if disk_size is None:
-        disk_size = int(round(canvas_size * (740.0 / 3840.0)))
-
-    if orbit_radius is None:
-        orbit_radius = int(round(canvas_size * (1350.0 / 3840.0)))
-
+    # Layout
     if layout in ["circle", "ring"]:
-        dir_val = direction or "ccw"
         canvas = generate_circular_composite(
-            samples,
-            canvas_size=canvas_size,
+            samples, canvas_size=canvas_size,
             orbit_radius=orbit_radius,
-            disk_size=disk_size,
-            direction=dir_val,
-            center_totality=center_totality
+            direction=direction or "ccw",
+            disk_scale_factor=disk_scale_factor,
         )
-        default_name = f"eclipse_composite_circle_{canvas_size}p.png"
+        suffix = "circle"
+
+    elif layout in ["sinusoid", "s-curve", "s", "sinusoidal"]:
+        canvas = generate_sinusoid_composite(
+            samples, canvas_size=canvas_size,
+            disk_scale_factor=disk_scale_factor,
+        )
+        suffix = "sinusoid"
+
     elif layout == "diagonal":
-        dir_val = direction or "bottom_left_to_top_right"
         canvas = generate_diagonal_composite(
-            samples,
-            canvas_size=canvas_size,
-            disk_size=int(disk_size * 0.85),
-            direction=dir_val
+            samples, canvas_size=canvas_size,
+            direction=direction or "bottom_left_to_top_right",
+            disk_scale_factor=disk_scale_factor,
         )
-        default_name = f"eclipse_composite_diagonal_{canvas_size}p.png"
+        suffix = "diagonal"
+
     elif layout == "horizontal":
         canvas = generate_horizontal_composite(
-            samples,
-            canvas_size=canvas_size,
-            disk_size=int(disk_size * 0.80)
+            samples, canvas_size=canvas_size,
+            disk_scale_factor=disk_scale_factor,
         )
-        default_name = f"eclipse_composite_horizontal_{canvas_size}p.png"
+        suffix = "horizontal"
+
     elif layout == "arc":
         canvas = generate_arc_composite(
-            samples,
-            canvas_size=canvas_size,
-            disk_size=int(disk_size * 0.85)
+            samples, canvas_size=canvas_size,
+            disk_scale_factor=disk_scale_factor,
         )
-        default_name = f"eclipse_composite_arc_{canvas_size}p.png"
-    else:
-        raise ValueError(f"Unknown layout mode: '{layout}'. Choose 'circle', 'diagonal', 'horizontal', or 'arc'.")
+        suffix = "arc"
 
-    final_out = output_path or os.path.join(resolved_out_dir, default_name)
+    else:
+        raise ValueError(f"Unknown layout: '{layout}'. Choose sinusoid/circle/diagonal/horizontal/arc.")
+
+    # Save
+    default_name = f"eclipse_composite_{suffix}_{canvas_size}p.png"
+    final_out = output_path or os.path.join(resolved_out, default_name)
     if not os.path.isabs(final_out):
+        repo_root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
         final_out = os.path.join(repo_root, final_out)
 
     print(f"\nSaving UHD Composite Artwork...")
     cv2.imwrite(final_out, canvas)
-    
-    # Also export high-quality JPG
     jpg_out = os.path.splitext(final_out)[0] + ".jpg"
     cv2.imwrite(jpg_out, canvas, [cv2.IMWRITE_JPEG_QUALITY, 95])
 
-    size_png_mb = os.path.getsize(final_out) / (1024 * 1024)
-    size_jpg_mb = os.path.getsize(jpg_out) / (1024 * 1024)
-
+    size_png = os.path.getsize(final_out) / (1024 * 1024)
+    size_jpg = os.path.getsize(jpg_out)   / (1024 * 1024)
     print("=" * 65)
-    print(f"SUCCESS: Composite image generated successfully!")
-    print(f"  PNG (Lossless) : {final_out} ({size_png_mb:.2f} MB)")
-    print(f"  JPG (High-Q)   : {jpg_out} ({size_jpg_mb:.2f} MB)")
+    print(f"SUCCESS: Composite generated!")
+    print(f"  PNG (Lossless) : {final_out} ({size_png:.2f} MB)")
+    print(f"  JPG (High-Q)   : {jpg_out} ({size_jpg:.2f} MB)")
     print("=" * 65)
     return final_out
 
 
+# ─────────────────────────────────────────────────────────────────────────────
+# CLI
+# ─────────────────────────────────────────────────────────────────────────────
+
 if __name__ == "__main__":
-    parser = argparse.ArgumentParser(description="Generate high-resolution (3840x3840 UHD) composite images of the solar eclipse progression")
-    parser.add_argument("--layout", "-l", type=str, choices=["circle", "ring", "diagonal", "horizontal", "arc", "all"], default="circle",
-                        help="Composition layout: 'circle' (wreath ring), 'diagonal' (bottom-left to top-right), 'horizontal', 'arc', or 'all'. Default: circle")
+    parser = argparse.ArgumentParser(
+        description="Generate 3840x3840 UHD solar eclipse composite artwork."
+    )
+    parser.add_argument("--layout", "-l", type=str,
+                        choices=["sinusoid", "s-curve", "circle", "ring", "diagonal", "horizontal", "arc", "all"],
+                        default="sinusoid",
+                        help="Composition layout (default: sinusoid)")
     parser.add_argument("--size", "-s", type=int, default=3840,
-                        help="Square canvas size in pixels (default: 3840 for UHD squared)")
-    parser.add_argument("--phases", "-n", type=int, default=15,
-                        help="Number of eclipse phase steps to render (default: 15)")
-    parser.add_argument("--disk-size", type=int, default=None,
-                        help="Diameter of individual solar disks in pixels (default: auto-scaled)")
+                        help="Square canvas size in pixels (default: 3840)")
+    parser.add_argument("--scale-factor", type=float, default=0.88,
+                        help="Disk scale factor relative to separation distance (default: 0.88)")
     parser.add_argument("--orbit-radius", type=int, default=None,
-                        help="Radius of circle orbit in pixels if layout is circle (default: auto-scaled)")
+                        help="Circle orbit radius in pixels (default: auto)")
     parser.add_argument("--direction", type=str, default=None,
-                        help="Direction of progression: for circle ('ccw' or 'cw'), for diagonal ('bottom_left_to_top_right' or 'top_left_to_bottom_right')")
-    parser.add_argument("--center-totality", action="store_true",
-                        help="Place totality in the center of the canvas in circular mode")
+                        help="Progression direction (ccw/cw for circle; bottom_left_to_top_right for diagonal)")
     parser.add_argument("--output", "-o", type=str, default=None,
-                        help="Custom output image path (default: 040_out/eclipse_composite_<layout>_<size>p.png)")
+                        help="Custom output path (default: 040_out/eclipse_composite_<layout>_<size>p.png)")
     args = parser.parse_args()
 
-    if args.layout == "all":
-        for lay in ["circle", "diagonal", "horizontal", "arc"]:
-            build_composite(
-                layout=lay,
-                canvas_size=args.size,
-                num_phases=args.phases,
-                disk_size=args.disk_size,
-                orbit_radius=args.orbit_radius,
-                direction=args.direction,
-                center_totality=args.center_totality,
-                output_path=args.output
-            )
-    else:
+    layouts = ["sinusoid", "circle", "diagonal", "horizontal", "arc"] if args.layout == "all" else [args.layout]
+    for lay in layouts:
         build_composite(
-            layout=args.layout,
+            layout=lay,
             canvas_size=args.size,
-            num_phases=args.phases,
-            disk_size=args.disk_size,
             orbit_radius=args.orbit_radius,
             direction=args.direction,
-            center_totality=args.center_totality,
-            output_path=args.output
+            disk_scale_factor=args.scale_factor,
+            out_dir="040_out",
+            output_path=args.output if args.layout != "all" else None,
         )
