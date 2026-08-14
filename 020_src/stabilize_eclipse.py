@@ -15,7 +15,7 @@ Algorithm:
    fixed at the image center (640, 360) across all eclipse phases with zero drift.
 3. Lanczos-4 Spatial Warping & HEVC/H.265 Direct Video Encoding.
 
-Author: Antigravity
+Authors: Fernando (nandoide) & Antigravity (Google Gemini 2.5 Flash Thinking)
 Workspace: eclipse_assembler
 """
 
