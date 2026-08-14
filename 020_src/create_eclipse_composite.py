@@ -1,13 +1,13 @@
 #!/usr/bin/env python3
 """
-High-Resolution Solar Eclipse Composite & Mosaic Generator (UHD Squared 3840x3840)
-===================================================================================
+High-Resolution Solar Eclipse Composite & Mosaic Generator (UHD Squared 3840x3840 & Custom Aspect Ratios)
+========================================================================================================
 Generates ultra-high-resolution composite artwork capturing the complete
 progression of the 2026 total solar eclipse on a clean aesthetic canvas.
 
 Supported Layout Modes:
   1. 'sinusoid' (or 's-curve', 's'):
-     Graceful S-shaped sinusoidal wave sweeping across the square canvas with
+     Graceful S-shaped sinusoidal wave sweeping across the canvas with
      grand totality at the center inflection.
   2. 'circle' (or 'ring'):
      Circular orbit wreath with symmetric totality apex and trimmed partials.
@@ -18,18 +18,11 @@ Supported Layout Modes:
   5. 'arc':
      Graceful parabolic arc mirroring the Sun's celestial trajectory.
 
-Totality Sequence & Symmetry:
-  - Ingress beads (frame ~30): Diamond Ring / point sources on left limb.
-  - Ingress chromosphere (frame ~70): Red H-alpha arc and prominence on left limb.
-  - Mid totality (frame ~600): Chromosphere prominence and inner corona.
-  - Grand Corona (frame ~1200): Wide outer corona streamers at peak exposure.
-  - Egress chromosphere (frame ~2700): Red H-alpha arc on right limb.
-  - Egress beads (frame ~2850): C3 Diamond Ring on right limb.
-
-Alignment & Spacing:
-  - Disks use the stabilized video center (640, 360) ensuring 100% true geometric alignment.
-  - Default disk_scale_factor = 0.88 prevents circular disk overlap across all layouts,
-    providing clean margins while letting corona streamers flow into the dark space.
+Parametrizations:
+  - Canvas resolution: --size S (square SxS, e.g. 3840, 2048, 4096, 7680)
+    or custom rectangular --width W --height H (e.g. 3840x2160 for 4K 16:9 wallpapers).
+  - Disk scaling: --scale-factor (default 0.88, scales disk diameter relative to spacing).
+  - Spacing / Orbit: --margin, --orbit-radius, --amplitude.
 
 Authors: Fernando (nandoide) & Antigravity (Google Deepmind)
 Workspace: eclipse_assembler
@@ -214,14 +207,14 @@ def sample_eclipse_sequence(
 # RENDERING WITH UNIFIED DISK SCALE & EXPANDED CORONA
 # ─────────────────────────────────────────────────────────────────────────────
 
-def render_consistent_scale(samples, positions, canvas_size=3840, disk_scale_factor=0.88):
+def render_consistent_scale(samples, positions, width=3840, height=3840, disk_scale_factor=0.88):
     """
     Renders all sequence samples with 1:1 consistent disk diameters on the canvas.
     Totality crops naturally extend their wide corona streamers across the canvas
     and blend onto neighboring black background seamlessly with np.maximum.
     disk_scale_factor = 0.88 ensures no overlap between adjacent disk circles.
     """
-    canvas = np.zeros((canvas_size, canvas_size, 3), dtype=np.uint8)
+    canvas = np.zeros((height, width, 3), dtype=np.uint8)
     n = len(samples)
     if n <= 1:
         return canvas
@@ -249,10 +242,10 @@ def render_consistent_scale(samples, positions, canvas_size=3840, disk_scale_fac
         x2, y2 = x1 + pw, y1 + ph
 
         src_x1 = max(0, -x1); src_y1 = max(0, -y1)
-        src_x2 = pw - max(0, x2 - canvas_size)
-        src_y2 = ph - max(0, y2 - canvas_size)
+        src_x2 = pw - max(0, x2 - width)
+        src_y2 = ph - max(0, y2 - height)
         dst_x1 = max(0, x1); dst_y1 = max(0, y1)
-        dst_x2 = min(canvas_size, x2); dst_y2 = min(canvas_size, y2)
+        dst_x2 = min(width, x2); dst_y2 = min(height, y2)
 
         if dst_x2 > dst_x1 and dst_y2 > dst_y1:
             roi = resized[src_y1:src_y2, src_x1:src_x2]
@@ -270,16 +263,17 @@ def render_consistent_scale(samples, positions, canvas_size=3840, disk_scale_fac
 
 def generate_circular_composite(
     samples,
-    canvas_size=3840,
+    width=3840,
+    height=3840,
     orbit_radius=None,
     direction="ccw",
     start_angle_deg=270.0,
     disk_scale_factor=0.88,
 ):
     """Circular wreath layout with clean non-overlapping disks and wide corona."""
-    cx, cy = canvas_size // 2, canvas_size // 2
+    cx, cy = width // 2, height // 2
     if orbit_radius is None:
-        orbit_radius = int(canvas_size * 0.365)
+        orbit_radius = int(min(width, height) * 0.365)
 
     n = len(samples)
     sign = 1.0 if direction.lower() == "ccw" else -1.0
@@ -292,14 +286,15 @@ def generate_circular_composite(
         py = int(round(cy - orbit_radius * math.sin(theta)))
         positions.append((px, py))
 
-    return render_consistent_scale(samples, positions, canvas_size=canvas_size, disk_scale_factor=disk_scale_factor)
+    return render_consistent_scale(samples, positions, width=width, height=height, disk_scale_factor=disk_scale_factor)
 
 
 def generate_sinusoid_composite(
     samples,
-    canvas_size=3840,
-    margin=350,
-    amplitude=900,
+    width=3840,
+    height=3840,
+    margin=None,
+    amplitude=None,
     disk_scale_factor=0.88,
 ):
     """
@@ -308,33 +303,39 @@ def generate_sinusoid_composite(
     dips into a lower trough, and egress rises back to the right margin.
     """
     n = len(samples)
-    cy = canvas_size // 2
+    cy = height // 2
+    margin_x = margin if margin is not None else int(width * 0.09)
+    amp = amplitude if amplitude is not None else int(height * 0.235)
 
     positions = []
     for i in range(n):
         t = i / max(1, n - 1)
-        px = int(round(margin + t * (canvas_size - 2 * margin)))
-        py = int(round(cy - amplitude * math.sin(2 * math.pi * t)))
+        px = int(round(margin_x + t * (width - 2 * margin_x)))
+        py = int(round(cy - amp * math.sin(2 * math.pi * t)))
         positions.append((px, py))
 
-    return render_consistent_scale(samples, positions, canvas_size=canvas_size, disk_scale_factor=disk_scale_factor)
+    return render_consistent_scale(samples, positions, width=width, height=height, disk_scale_factor=disk_scale_factor)
 
 
 def generate_diagonal_composite(
     samples,
-    canvas_size=3840,
+    width=3840,
+    height=3840,
     direction="bottom_left_to_top_right",
-    margin=380,
+    margin=None,
     disk_scale_factor=0.88,
 ):
     """Diagonal progression from bottom-left to top-right with non-overlapping disks."""
     n = len(samples)
+    margin_x = margin if margin is not None else int(width * 0.10)
+    margin_y = margin if margin is not None else int(height * 0.10)
+
     if direction == "bottom_left_to_top_right":
-        x_start, y_start = margin, canvas_size - margin
-        x_end,   y_end   = canvas_size - margin, margin
+        x_start, y_start = margin_x, height - margin_y
+        x_end,   y_end   = width - margin_x, margin_y
     else:
-        x_start, y_start = margin, margin
-        x_end,   y_end   = canvas_size - margin, canvas_size - margin
+        x_start, y_start = margin_x, margin_y
+        x_end,   y_end   = width - margin_x, height - margin_y
 
     positions = []
     for i in range(n):
@@ -343,33 +344,36 @@ def generate_diagonal_composite(
         py = int(round(y_start + t * (y_end - y_start)))
         positions.append((px, py))
 
-    return render_consistent_scale(samples, positions, canvas_size=canvas_size, disk_scale_factor=disk_scale_factor)
+    return render_consistent_scale(samples, positions, width=width, height=height, disk_scale_factor=disk_scale_factor)
 
 
 def generate_horizontal_composite(
     samples,
-    canvas_size=3840,
-    margin=350,
+    width=3840,
+    height=3840,
+    margin=None,
     disk_scale_factor=0.88,
 ):
     """Horizontal left-to-right progression with laser-aligned centers and clean spacing."""
     n  = len(samples)
-    cy = canvas_size // 2
+    cy = height // 2
+    margin_x = margin if margin is not None else int(width * 0.09)
 
     positions = [
-        (int(round(margin + (i / max(1, n - 1)) * (canvas_size - 2 * margin))), cy)
+        (int(round(margin_x + (i / max(1, n - 1)) * (width - 2 * margin_x))), cy)
         for i in range(n)
     ]
 
-    return render_consistent_scale(samples, positions, canvas_size=canvas_size, disk_scale_factor=disk_scale_factor)
+    return render_consistent_scale(samples, positions, width=width, height=height, disk_scale_factor=disk_scale_factor)
 
 
 def generate_arc_composite(
     samples,
-    canvas_size=3840,
-    margin_x=350,
-    margin_bot=350,
-    margin_top=420,
+    width=3840,
+    height=3840,
+    margin_x=None,
+    margin_bot=None,
+    margin_top=None,
     disk_scale_factor=0.88,
 ):
     """
@@ -377,16 +381,20 @@ def generate_arc_composite(
     utilizing the full vertical and horizontal canvas expanse with grand totality crowning the apex.
     """
     n = len(samples)
+    mx = margin_x if margin_x is not None else int(width * 0.09)
+    mb = margin_bot if margin_bot is not None else int(height * 0.09)
+    mt = margin_top if margin_top is not None else int(height * 0.11)
+
     positions = []
-    y_bot = canvas_size - margin_bot
+    y_bot = height - mb
     for i in range(n):
         t      = i / max(1, n - 1)
-        px     = int(round(margin_x + t * (canvas_size - 2 * margin_x)))
+        px     = int(round(mx + t * (width - 2 * mx)))
         t_norm = (t - 0.5) * 2.0
-        py     = int(round(y_bot - (1.0 - t_norm ** 2) * (y_bot - margin_top)))
+        py     = int(round(y_bot - (1.0 - t_norm ** 2) * (y_bot - mt)))
         positions.append((px, py))
 
-    return render_consistent_scale(samples, positions, canvas_size=canvas_size, disk_scale_factor=disk_scale_factor)
+    return render_consistent_scale(samples, positions, width=width, height=height, disk_scale_factor=disk_scale_factor)
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -395,10 +403,13 @@ def generate_arc_composite(
 
 def build_composite(
     layout="sinusoid",
-    canvas_size=3840,
+    width=3840,
+    height=3840,
     orbit_radius=None,
     direction=None,
     disk_scale_factor=0.88,
+    margin=None,
+    amplitude=None,
     out_dir="040_out",
     output_path=None,
 ):
@@ -406,10 +417,10 @@ def build_composite(
     os.makedirs(resolved_out, exist_ok=True)
 
     print("=" * 65)
-    print(f"ECLIPSE COMPOSITE GENERATOR (UHD Squared {canvas_size}x{canvas_size})")
+    print(f"ECLIPSE COMPOSITE GENERATOR ({width}x{height})")
     print("=" * 65)
     print(f"  Layout Mode       : {layout.upper()}")
-    print(f"  Resolution        : {canvas_size}x{canvas_size} px")
+    print(f"  Resolution        : {width}x{height} px")
     print(f"  Disk Scale Factor : {disk_scale_factor:.2f}")
 
     samples = sample_eclipse_sequence(
@@ -423,7 +434,7 @@ def build_composite(
     # Layout
     if layout in ["circle", "ring"]:
         canvas = generate_circular_composite(
-            samples, canvas_size=canvas_size,
+            samples, width=width, height=height,
             orbit_radius=orbit_radius,
             direction=direction or "ccw",
             disk_scale_factor=disk_scale_factor,
@@ -432,29 +443,34 @@ def build_composite(
 
     elif layout in ["sinusoid", "s-curve", "s", "sinusoidal"]:
         canvas = generate_sinusoid_composite(
-            samples, canvas_size=canvas_size,
+            samples, width=width, height=height,
+            margin=margin,
+            amplitude=amplitude,
             disk_scale_factor=disk_scale_factor,
         )
         suffix = "sinusoid"
 
     elif layout == "diagonal":
         canvas = generate_diagonal_composite(
-            samples, canvas_size=canvas_size,
+            samples, width=width, height=height,
             direction=direction or "bottom_left_to_top_right",
+            margin=margin,
             disk_scale_factor=disk_scale_factor,
         )
         suffix = "diagonal"
 
     elif layout == "horizontal":
         canvas = generate_horizontal_composite(
-            samples, canvas_size=canvas_size,
+            samples, width=width, height=height,
+            margin=margin,
             disk_scale_factor=disk_scale_factor,
         )
         suffix = "horizontal"
 
     elif layout == "arc":
         canvas = generate_arc_composite(
-            samples, canvas_size=canvas_size,
+            samples, width=width, height=height,
+            margin_x=margin,
             disk_scale_factor=disk_scale_factor,
         )
         suffix = "arc"
@@ -463,13 +479,14 @@ def build_composite(
         raise ValueError(f"Unknown layout: '{layout}'. Choose sinusoid/circle/diagonal/horizontal/arc.")
 
     # Save
-    default_name = f"eclipse_composite_{suffix}_{canvas_size}p.png"
+    res_tag = f"{width}p" if width == height else f"{width}x{height}"
+    default_name = f"eclipse_composite_{suffix}_{res_tag}.png"
     final_out = output_path or os.path.join(resolved_out, default_name)
     if not os.path.isabs(final_out):
         repo_root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
         final_out = os.path.join(repo_root, final_out)
 
-    print(f"\nSaving UHD Composite Artwork...")
+    print(f"\nSaving Composite Artwork...")
     cv2.imwrite(final_out, canvas)
     jpg_out = os.path.splitext(final_out)[0] + ".jpg"
     cv2.imwrite(jpg_out, canvas, [cv2.IMWRITE_JPEG_QUALITY, 95])
@@ -490,7 +507,7 @@ def build_composite(
 
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(
-        description="Generate 3840x3840 UHD solar eclipse composite artwork."
+        description="Generate UHD & custom aspect-ratio solar eclipse composite artwork."
     )
     parser.add_argument("--layout", "-l", type=str,
                         choices=["sinusoid", "s-curve", "circle", "ring", "diagonal", "horizontal", "arc", "all"],
@@ -498,24 +515,38 @@ if __name__ == "__main__":
                         help="Composition layout (default: sinusoid)")
     parser.add_argument("--size", "-s", type=int, default=3840,
                         help="Square canvas size in pixels (default: 3840)")
+    parser.add_argument("--width", "-W", type=int, default=None,
+                        help="Canvas width in pixels (overrides --size for non-square ratios)")
+    parser.add_argument("--height", "-H", type=int, default=None,
+                        help="Canvas height in pixels (overrides --size for non-square ratios)")
     parser.add_argument("--scale-factor", type=float, default=0.88,
                         help="Disk scale factor relative to separation distance (default: 0.88)")
+    parser.add_argument("--margin", type=int, default=None,
+                        help="Canvas margin padding in pixels (default: auto)")
+    parser.add_argument("--amplitude", type=int, default=None,
+                        help="Sinusoidal S-curve wave amplitude in pixels (default: auto)")
     parser.add_argument("--orbit-radius", type=int, default=None,
                         help="Circle orbit radius in pixels (default: auto)")
     parser.add_argument("--direction", type=str, default=None,
                         help="Progression direction (ccw/cw for circle; bottom_left_to_top_right for diagonal)")
     parser.add_argument("--output", "-o", type=str, default=None,
-                        help="Custom output path (default: 040_out/eclipse_composite_<layout>_<size>p.png)")
+                        help="Custom output path (default: 040_out/eclipse_composite_<layout>_<resolution>.png)")
     args = parser.parse_args()
+
+    width = args.width or args.size
+    height = args.height or args.size
 
     layouts = ["sinusoid", "circle", "diagonal", "horizontal", "arc"] if args.layout == "all" else [args.layout]
     for lay in layouts:
         build_composite(
             layout=lay,
-            canvas_size=args.size,
+            width=width,
+            height=height,
             orbit_radius=args.orbit_radius,
             direction=args.direction,
             disk_scale_factor=args.scale_factor,
+            margin=args.margin,
+            amplitude=args.amplitude,
             out_dir="040_out",
             output_path=args.output if args.layout != "all" else None,
         )
