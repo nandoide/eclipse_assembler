@@ -34,6 +34,18 @@ def generate_compact_eclipse(
     crf: int = 22,
     preset: str = "slow"
 ):
+    repo_root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+    if not os.path.isabs(input_path) and not os.path.exists(input_path):
+        resolved_input = os.path.join(repo_root, input_path)
+        if os.path.exists(resolved_input):
+            input_path = resolved_input
+
+    if not os.path.isabs(output_path):
+        out_dir = os.path.dirname(output_path)
+        if out_dir and not os.path.exists(out_dir):
+            resolved_output = os.path.join(repo_root, output_path)
+            output_path = resolved_output
+
     if not os.path.exists(input_path):
         print(f"Error: Input video '{input_path}' not found.", file=sys.stderr)
         return
