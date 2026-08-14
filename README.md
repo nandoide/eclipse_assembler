@@ -117,8 +117,9 @@ The assembly supports three distinct transition modes:
 
 ### Setup Virtual Environment
 ```bash
-# Clone or navigate to the repository
-cd eclipse26
+# Clone and navigate to the repository
+git clone https://github.com/nandoide/eclipse_assembler.git
+cd eclipse_assembler
 
 # Create and activate virtual environment
 python3 -m venv .venv
@@ -201,7 +202,7 @@ python 020_src/stabilize_eclipse.py \
 ## 📂 Project Directory Structure
 
 ```
-eclipse26/
+eclipse_assembler/
 ├── 010_in/                           # Source input footage (user provided)
 │   ├── partial_ingress.mp4           # Partial ingress time-lapse snippet
 │   ├── pre_totality.mp4              # Pre-totality continuous approach

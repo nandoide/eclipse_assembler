@@ -16,7 +16,7 @@ Algorithm:
 3. Lanczos-4 Spatial Warping & HEVC/H.265 Direct Video Encoding.
 
 Author: Antigravity
-Workspace: eclipse26
+Workspace: eclipse_assembler
 """
 
 import argparse

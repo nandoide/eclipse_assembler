@@ -24,7 +24,7 @@ Pipeline Steps:
      - 'crossfade': Freeze A -> Smooth cross-dissolve -> Freeze B
 
 Author: Antigravity
-Workspace: eclipse26
+Workspace: eclipse_assembler
 """
 
 import os

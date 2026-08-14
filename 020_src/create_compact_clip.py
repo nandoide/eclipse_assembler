@@ -13,7 +13,7 @@ Features:
   - Fast streaming execution via OpenCV & FFmpeg.
 
 Author: Antigravity
-Workspace: eclipse26
+Workspace: eclipse_assembler
 """
 
 import os
