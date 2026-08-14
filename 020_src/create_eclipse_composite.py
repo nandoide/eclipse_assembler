@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """
-High-Resolution Solar Eclipse Composite & Mosaic Generator (UHD Squared 3840x3840 & Custom Aspect Ratios)
+High-Resolution Solar Eclipse Composite & Mosaic Generator (UHD Squared 3840x3840 & Mobile 9:16 / 16:9)
 ========================================================================================================
 Generates ultra-high-resolution composite artwork capturing the complete
 progression of the 2026 total solar eclipse on a clean aesthetic canvas.
@@ -9,20 +9,25 @@ Supported Layout Modes:
   1. 'sinusoid' (or 's-curve', 's'):
      Graceful S-shaped sinusoidal wave sweeping across the canvas with
      grand totality at the center inflection.
-  2. 'circle' (or 'ring'):
+  2. 'vertical' (or 'mobile', 'vertical-linear'):
+     Laser-aligned top-to-bottom vertical progression (default 2160x3840 9:16 for mobile).
+  3. 'vertical-s' (or 's-vertical', 'mobile-s'):
+     Vertical S-curve snake snaking down the mobile screen (default 2160x3840 9:16).
+  4. 'circle' (or 'ring'):
      Circular orbit wreath with symmetric totality apex and trimmed partials.
-  3. 'diagonal':
+  5. 'diagonal':
      Progressing diagonally from bottom-left to top-right with expansive corona streamers.
-  4. 'horizontal':
+  6. 'horizontal':
      Linear progression across the horizontal midline with laser-aligned centers.
-  5. 'arc':
+  7. 'arc':
      Graceful parabolic arc mirroring the Sun's celestial trajectory.
 
 Parametrizations:
   - Canvas resolution: --size S (square SxS, e.g. 3840, 2048, 4096, 7680)
-    or custom rectangular --width W --height H (e.g. 3840x2160 for 4K 16:9 wallpapers).
+    or custom rectangular --width W --height H (e.g. 2160x3840 for 9:16 mobile wallpapers,
+    3840x2160 for 16:9 desktop wallpapers).
   - Disk scaling: --scale-factor (default 0.88, scales disk diameter relative to spacing).
-  - Spacing / Orbit: --margin, --orbit-radius, --amplitude.
+  - Spacing / Margins: --margin, --orbit-radius, --amplitude.
 
 Authors: Fernando (nandoide) & Antigravity (Google Deepmind)
 Workspace: eclipse_assembler
@@ -317,6 +322,57 @@ def generate_sinusoid_composite(
     return render_consistent_scale(samples, positions, width=width, height=height, disk_scale_factor=disk_scale_factor)
 
 
+def generate_vertical_composite(
+    samples,
+    width=2160,
+    height=3840,
+    margin=None,
+    disk_scale_factor=0.88,
+):
+    """
+    Vertical linear layout (9:16 mobile format).
+    Progresses straight down the midline from top to bottom with grand totality at the center.
+    """
+    n = len(samples)
+    cx = width // 2
+    margin_y = margin if margin is not None else int(height * 0.09)
+
+    positions = [
+        (cx, int(round(margin_y + (i / max(1, n - 1)) * (height - 2 * margin_y))))
+        for i in range(n)
+    ]
+
+    return render_consistent_scale(samples, positions, width=width, height=height, disk_scale_factor=disk_scale_factor)
+
+
+def generate_vertical_sinusoid_composite(
+    samples,
+    width=2160,
+    height=3840,
+    margin=None,
+    amplitude=None,
+    disk_scale_factor=0.88,
+):
+    """
+    Vertical S-curve snake layout (9:16 mobile format).
+    Snakes down the phone screen: starts top (curves left), passes through grand totality
+    at the screen center, curves right, and exits down to the bottom.
+    """
+    n = len(samples)
+    cx = width // 2
+    margin_y = margin if margin is not None else int(height * 0.09)
+    amp_x = amplitude if amplitude is not None else int(width * 0.255)
+
+    positions = []
+    for i in range(n):
+        t = i / max(1, n - 1)
+        px = int(round(cx - amp_x * math.sin(2 * math.pi * t)))
+        py = int(round(margin_y + t * (height - 2 * margin_y)))
+        positions.append((px, py))
+
+    return render_consistent_scale(samples, positions, width=width, height=height, disk_scale_factor=disk_scale_factor)
+
+
 def generate_diagonal_composite(
     samples,
     width=3840,
@@ -450,6 +506,23 @@ def build_composite(
         )
         suffix = "sinusoid"
 
+    elif layout in ["vertical", "mobile", "vertical-linear"]:
+        canvas = generate_vertical_composite(
+            samples, width=width, height=height,
+            margin=margin,
+            disk_scale_factor=disk_scale_factor,
+        )
+        suffix = "vertical"
+
+    elif layout in ["vertical-s", "s-vertical", "mobile-s"]:
+        canvas = generate_vertical_sinusoid_composite(
+            samples, width=width, height=height,
+            margin=margin,
+            amplitude=amplitude,
+            disk_scale_factor=disk_scale_factor,
+        )
+        suffix = "vertical_s"
+
     elif layout == "diagonal":
         canvas = generate_diagonal_composite(
             samples, width=width, height=height,
@@ -476,7 +549,7 @@ def build_composite(
         suffix = "arc"
 
     else:
-        raise ValueError(f"Unknown layout: '{layout}'. Choose sinusoid/circle/diagonal/horizontal/arc.")
+        raise ValueError(f"Unknown layout: '{layout}'. Choose sinusoid/vertical/vertical-s/circle/diagonal/horizontal/arc.")
 
     # Save
     res_tag = f"{width}p" if width == height else f"{width}x{height}"
@@ -510,7 +583,7 @@ if __name__ == "__main__":
         description="Generate UHD & custom aspect-ratio solar eclipse composite artwork."
     )
     parser.add_argument("--layout", "-l", type=str,
-                        choices=["sinusoid", "s-curve", "circle", "ring", "diagonal", "horizontal", "arc", "all"],
+                        choices=["sinusoid", "s-curve", "vertical", "vertical-s", "mobile", "circle", "ring", "diagonal", "horizontal", "arc", "all"],
                         default="sinusoid",
                         help="Composition layout (default: sinusoid)")
     parser.add_argument("--size", "-s", type=int, default=3840,
@@ -524,7 +597,7 @@ if __name__ == "__main__":
     parser.add_argument("--margin", type=int, default=None,
                         help="Canvas margin padding in pixels (default: auto)")
     parser.add_argument("--amplitude", type=int, default=None,
-                        help="Sinusoidal S-curve wave amplitude in pixels (default: auto)")
+                        help="Sinusoidal wave amplitude in pixels (default: auto)")
     parser.add_argument("--orbit-radius", type=int, default=None,
                         help="Circle orbit radius in pixels (default: auto)")
     parser.add_argument("--direction", type=str, default=None,
@@ -533,15 +606,19 @@ if __name__ == "__main__":
                         help="Custom output path (default: 040_out/eclipse_composite_<layout>_<resolution>.png)")
     args = parser.parse_args()
 
-    width = args.width or args.size
-    height = args.height or args.size
-
-    layouts = ["sinusoid", "circle", "diagonal", "horizontal", "arc"] if args.layout == "all" else [args.layout]
+    layouts = ["sinusoid", "vertical", "vertical-s", "circle", "diagonal", "horizontal", "arc"] if args.layout == "all" else [args.layout]
     for lay in layouts:
+        # Default vertical layouts to 2160x3840 (9:16 vertical) unless explicitly overridden
+        if lay in ["vertical", "vertical-s", "mobile", "s-vertical"] and args.width is None and args.height is None and args.size == 3840:
+            lay_w, lay_h = 2160, 3840
+        else:
+            lay_w = args.width or args.size
+            lay_h = args.height or args.size
+
         build_composite(
             layout=lay,
-            width=width,
-            height=height,
+            width=lay_w,
+            height=lay_h,
             orbit_radius=args.orbit_radius,
             direction=args.direction,
             disk_scale_factor=args.scale_factor,

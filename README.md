@@ -178,20 +178,24 @@ python 020_src/create_eclipse_composite.py --layout all
 # 1. Sinusoidal S-Curve (default: 3840x3840 UHD squared with totality at center):
 python 020_src/create_eclipse_composite.py --layout sinusoid
 
-# 2. Circular wreath progression:
+# 2. Vertical Mobile Format 9:16 (2160x3840 px for smartphones):
+python 020_src/create_eclipse_composite.py --layout vertical
+python 020_src/create_eclipse_composite.py --layout vertical-s
+
+# 3. Circular wreath progression:
 python 020_src/create_eclipse_composite.py --layout circle
 
-# 3. Diagonal progression from bottom-left to top-right:
+# 4. Diagonal progression from bottom-left to top-right:
 python 020_src/create_eclipse_composite.py --layout diagonal
 
-# 4. Laser-aligned horizontal progression:
+# 5. Laser-aligned horizontal progression:
 python 020_src/create_eclipse_composite.py --layout horizontal
 
-# 5. Celestial parabolic arc spanning full canvas height:
+# 6. Celestial parabolic arc spanning full canvas height:
 python 020_src/create_eclipse_composite.py --layout arc
 
-# Custom canvas size (e.g. 4096 or 8K):
-python 020_src/create_eclipse_composite.py --layout sinusoid --size 4096
+# Custom canvas size or 16:9 desktop widescreen (e.g. 3840x2160):
+python 020_src/create_eclipse_composite.py --layout sinusoid --width 3840 --height 2160
 ```
 
 #### Composite Key Features:
@@ -262,6 +266,8 @@ eclipse_assembler/
 │   ├── full_eclipse.mp4              # ★ Complete master film (150.03s / 11.34 MB)
 │   ├── full_eclipse_30s.mp4          # ⚡ Compact 30s accelerated film (30.00s / 1.19 MB)
 │   ├── eclipse_composite_sinusoid_3840p.png # 🖼️ UHD S-Curve composite (3840x3840)
+│   ├── eclipse_composite_vertical_2160x3840.png # 📱 UHD Vertical 9:16 linear mobile composite (2160x3840)
+│   ├── eclipse_composite_vertical_s_2160x3840.png # 📱 UHD Vertical 9:16 S-curve mobile composite (2160x3840)
 │   ├── eclipse_composite_circle_3840p.png   # 🖼️ UHD Circular composite mosaic (3840x3840)
 │   ├── eclipse_composite_diagonal_3840p.png # 🖼️ UHD Diagonal composite progression (3840x3840)
 │   ├── eclipse_composite_horizontal_3840p.png # 🖼️ UHD Laser-aligned horizontal progression (3840x3840)
@@ -282,6 +288,8 @@ eclipse_assembler/
 | **`partial_egress.mp4`** | 1280x720 | 30.1 fps | 8.17s (1.22 MB) | Stabilized partial egress with $C_3$ center inheritance |
 | **`full_eclipse.mp4`** | **1280x720** | **30.0 fps** | **150.03s (11.34 MB)** | 🎬 **Master film with cinematic `fade_to_black` transitions** |
 | **`full_eclipse_30s.mp4`** | **1280x720** | **30.0 fps** | **30.00s (1.19 MB)** | ⚡ **Accelerated 30s compact video in H.264 for universal sharing** |
+| **`eclipse_composite_vertical_2160x3840.png`** | **2160x3840** | **PNG / JPG** | **0.52 MB / 0.23 MB** | 📱 **UHD Vertical 9:16 linear mobile wallpaper format** |
+| **`eclipse_composite_vertical_s_2160x3840.png`** | **2160x3840** | **PNG / JPG** | **0.54 MB / 0.23 MB** | 📱 **UHD Vertical 9:16 S-curve mobile wallpaper format** |
 | **`eclipse_composite_sinusoid_3840p.png`** | **3840x3840** | **PNG / JPG** | **0.57 MB / 0.33 MB** | 🖼️ **UHD S-Curve wave composite with totality at center** |
 | **`eclipse_composite_circle_3840p.png`** | **3840x3840** | **PNG / JPG** | **2.34 MB / 0.60 MB** | 🖼️ **UHD Circular wreath mosaic with corona and beads** |
 | **`eclipse_composite_diagonal_3840p.png`**| **3840x3840** | **PNG / JPG** | **0.91 MB / 0.38 MB** | 🖼️ **UHD Diagonal progression (bottom-left to top-right)** |
