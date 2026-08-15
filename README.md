@@ -115,7 +115,7 @@ This pipeline follows **Convention over Configuration (CoC)**. Curated assets in
 | **`03_video_realtime.mp4`** | `video_realtime` | Continuous 1x real-time video (30 fps) with lunar silhouette, corona, and Baily's beads tracking. Preserves exact 1:1 real-time duration. | Native real duration ($\mathbf{1\times}$ Real-Time) |
 | **`04_timelapse_i10.mp4`** | `timelapse` | Egress timelapse with `_i[INTERVAL]` parameter (`_i10` = 1 frame every 10s). Subpixel solar limb stabilization. | Native clip duration (speed: $10\text{s} \times 30\text{fps} = \mathbf{300\times}$) |
 | **`05_photo_6.jpg`** | `photo` | Visual still image, scaled preserving aspect ratio with clean black letterbox padding for specified duration (e.g. 6s). | 10.0s (or `_6` for 6s) |
-| **`06_composite_sinusoid_10`** | `composite` | Generates high-resolution composite artwork mosaic on-the-fly, scaled to project resolution (16:9 1280x720), held for specified duration (e.g. 10s). | 10.0s |
+| **`06_composite_arc_10`** | `composite` | Generates high-resolution composite artwork mosaic on-the-fly (`arc`, `circle`, `ellipse`, `sinusoid`, etc.) with prominent totality contacts (`C2`, `TOTAL`, `C3`), scaled to project resolution (16:9 1280x720), held for specified duration (e.g. 10s). | 10.0s |
 
 ---
 
@@ -150,8 +150,8 @@ This pipeline follows **Convention over Configuration (CoC)**. Curated assets in
 │ 05_photo_6.jpg         │ ───► [Scale & Pad to Canvas]        ─► │ 05_photo_6.mp4         │
 │ (Still Photograph)     │      (Preserve AR + Black Border)      │ (6.00s @ 30 fps)       │
 ├────────────────────────┤                                        ├────────────────────────┤
-│ 06_composite_sinusoid  │ ───► [On-The-Fly Artwork Render]    ─► │ 06_composite_sinusoid  │
-│ (Mosaic Directive)     │      (Native 16:9 Mosaic + JSON Meta)  │ (10.00s @ 30 fps)      │
+│ 06_composite_arc_10    │ ───► [On-The-Fly Artwork Render]    ─► │ 06_composite_arc_10.mp4│
+│ (Mosaic Directive)     │      (Arc Mosaic + Central Contacts)   │ (10.00s @ 30 fps)      │
 └────────────────────────┘                                        └───────────┬────────────┘
                                                                               │
                                                                     [Master Assembly]
@@ -167,16 +167,17 @@ This pipeline follows **Convention over Configuration (CoC)**. Curated assets in
                                                                     [Astronomical Engine]
                                                                 (100% Direct RAW Timestamps +
                                                                  Multilingual Subtitles +
-                                                                 QuickTime mov_text Muxing)
+                                                                 QuickTime mov_text Muxing +
+                                                                 YouTube Chapters & Description)
                                                                               │
                                                                               ▼
-                                          ┌───────────────────────────────────┴───────────────────────────────────┐
-                                          ▼                                                                       ▼
-                              ┌────────────────────────┐                                              ┌────────────────────────┐
-                              │ full_eclipse_es.srt    │                                              │ full_eclipse_subtitled │
-                              │ full_eclipse_en.srt    │                                              │ .mp4 (QuickTime Dual)  │
-                              │ (YouTube / VLC)        │                                              │ (Native mov_text)      │
-                              └────────────────────────┘                                              └────────────────────────┘
+                                          ┌───────────────────────────────────┼───────────────────────────────────┐
+                                          ▼                                   ▼                                   ▼
+                              ┌────────────────────────┐          ┌────────────────────────┐          ┌────────────────────────┐
+                              │ full_eclipse_es.srt    │          │ full_eclipse_subtitled │          │ youtube_chapters.txt   │
+                              │ full_eclipse_en.srt    │          │ .mp4 (QuickTime Dual)  │          │ youtube_description.txt│
+                              │ (YouTube / VLC)        │          │ (Native mov_text)      │          │ (YouTube Ready)        │
+                              └────────────────────────┘          └────────────────────────┘          └────────────────────────┘
 ```
 
 ---
@@ -211,14 +212,31 @@ Discovers all assets in `010_in/`, renders the opening title card `00_title.mp4`
 python 020_src/build_full_eclipse.py
 ```
 
-### 2. Standalone Subtitle Generation & QuickTime Embedding
-To generate or update subtitles independently without re-rendering videos:
+### 2. Standalone Subtitle Generation, QuickTime Embedding & YouTube Chapters
+To generate or update subtitles and YouTube chapters independently without re-rendering videos:
 ```bash
-# Generate English + Spanish SRTs and embed in QuickTime MP4:
+# Generate English + Spanish SRTs, YouTube chapters, and embed in QuickTime MP4:
 python 020_src/generate_eclipse_subtitles.py --embed
 
 # Custom interval (e.g. every 10 seconds):
 python 020_src/generate_eclipse_subtitles.py --interval 10.0 --embed
+```
+
+This generates:
+- **`040_out/full_eclipse_es.srt` & `full_eclipse_en.srt`**: Multilingual subtitles synchronized to raw camera telemetry.
+- **`040_out/youtube_chapters.txt`**: YouTube-compliant chapter markers (starting at `0:00`) in Bilingual, Spanish, and English formats.
+- **`040_out/youtube_description.txt`**: Complete ready-to-paste YouTube video description with observer coordinates, ephemeris contact points, and timestamps.
+
+```text
+Capítulos / Chapters:
+0:00 - Ingreso Parcial / Partial Ingress (Timelapse)
+0:19 - Aproximación Pre-totalidad / Pre-totality (Thin Crescent)
+0:37 - C2: Anillo de Diamantes y Perlas de Baily / C2: Baily's Beads
+0:41 - Totalidad y Corona Solar / Totality (Real-Time 1x)
+2:13 - C3: Tercer Contacto / C3: Third Contact
+2:22 - Egreso Parcial / Partial Egress (Timelapse)
+2:33 - Fotografía HDR de la Corona / Solar Corona Photo
+2:42 - Mosaico Secuencia del Eclipse / Eclipse Sequence Composite (Arc)
 ```
 
 ### 3. Observational vs. Ephemeris Comparison Report
@@ -236,24 +254,41 @@ python 020_src/create_title_card.py --duration 5.0
 python 020_src/create_title_card.py --date 2026-08-12 --duration 5.0
 ```
 
-### 5. Standalone Composite Artwork Mosaic Generation
-To create standalone high-resolution photographic composite artwork with JSON metadata:
+### 5. High-Resolution Composite Mosaic Artwork Generator (`create_eclipse_composite.py`)
+Creates standalone high-resolution astronomical composite artwork across diverse mathematical progressions and aspect ratios, accompanied by comprehensive JSON metadata:
+
+#### Key Layouts & Geometries:
+- **`arc` (Parabolic Arch)**: Progression following a celestial solar arc. In portrait orientation ($9:16$), it expands vertically to maximize negative space.
+- **`circle` / `ellipse`**: Circular progression with totality at 12 o'clock (top). Automatically transforms into an adaptive ellipse on non-square canvases ($16:9$, $9:16$).
+- **`sinusoid` (S-Curve)**: Continuous sinusoidal wave parameterization with equal arc-length spacing.
+- **`vertical` / `vertical-s`**: Linear and serpentine vertical columns tailored for mobile wallpapers ($9:16$).
+- **`horizontal` / `diagonal`**: Linear horizontal and bottom-left to top-right diagonal trajectories.
+
+#### Featured Totality Contacts (`--contacts`):
+Inside the cavity of `arc`, `circle`, `ellipse`, and `sinusoid` layouts, the generator can render prominent enlarged keyframes ($1.22\times$ scale) of the totality sequence: **`C2`** *(diamond ring / Baily's beads at 20:27:35 CEST)*, **`TOTAL`** *(maximum grand corona at 20:28:23 CEST)*, and **`C3`** *(third contact diamond ring at 20:29:12 CEST)*.
+
 ```bash
-# 1. Sinusoidal S-Curve (default: 1280x720 16:9 matching project resolution):
-python 020_src/create_eclipse_composite.py --layout sinusoid
+# 1. Parabolic Celestial Arc with Contacts (Default for Video Assembly - 1280x720 16:9):
+python 020_src/create_eclipse_composite.py --layout arc -W 1280 -H 720 --contacts
 
-# 2. UHD 4K Squared (3840x3840 px):
-python 020_src/create_eclipse_composite.py --layout sinusoid --size 3840
+# 2. 4K UHD Desktop Arc with Timestamps (3840x2160 px):
+python 020_src/create_eclipse_composite.py --layout arc -W 3840 -H 2160 --contacts --show-labels
 
-# 3. 4K Desktop Widescreen (3840x2160 px):
-python 020_src/create_eclipse_composite.py --layout sinusoid --width 3840 --height 2160
+# 3. 4K Squared Circle/Ring with Contacts & Centered Labels (3840x3840 px):
+python 020_src/create_eclipse_composite.py --layout circle --size 3840 --contacts --show-labels
 
-# 4. Vertical Mobile Wallpaper 9:16 (2160x3840 px):
-python 020_src/create_eclipse_composite.py --layout vertical
-python 020_src/create_eclipse_composite.py --layout vertical-s
+# 4. Vertical Mobile Wallpaper 9:16 with Vertical Contacts (2160x3840 px):
+python 020_src/create_eclipse_composite.py --layout arc -W 2160 -H 3840 --contacts vertical --show-labels
+python 020_src/create_eclipse_composite.py --layout circle -W 2160 -H 3840 --contacts vertical --show-labels
 
-# 5. Generate all layouts at once (sinusoid, vertical, vertical-s, circle, diagonal, horizontal, arc):
-python 020_src/create_eclipse_composite.py --layout all
+# 5. Sinusoidal S-Curve 8K Master (7680x7680 px):
+python 020_src/create_eclipse_composite.py --layout sinusoid --size 7680 --contacts --show-labels
+
+# 6. Clean Orbital Curve without Central Contacts:
+python 020_src/create_eclipse_composite.py --layout circle --size 3840 --no-contacts --show-labels
+
+# 7. Generate all layouts simultaneously:
+python 020_src/create_eclipse_composite.py --layout all --contacts --show-labels
 ```
 
 ### 6. Ephemeris Database CLI & Refresh
@@ -297,7 +332,7 @@ eclipse_assembler/
 │   ├── 03_video_realtime.mp4         # Totality real-time continuous video (1x)
 │   ├── 04_timelapse_i10.mp4          # Egress time-lapse (1 frame every 10s)
 │   ├── 05_photo_6.jpg                # Still photograph (6s hold)
-│   └── 06_composite_sinusoid_10      # On-the-fly composite mosaic (10s hold)
+│   └── 06_composite_arc_10           # On-the-fly composite mosaic (10s hold)
 │
 ├── 020_src/                          # Python source code
 │   ├── build_full_eclipse.py         # ★ CoC Master pipeline and assembly script
@@ -305,7 +340,7 @@ eclipse_assembler/
 │   ├── fetch_eclipses_horizons.py    # ★ NASA JPL Horizons API fetcher & DB builder (2026-2036)
 │   ├── compare_contacts_ephemeris.py # ★ Observational telemetry vs. NASA ephemeris comparison
 │   ├── create_title_card.py          # ★ Cinematic title card generator (00_title.mp4)
-│   ├── generate_eclipse_subtitles.py # ★ 100% RAW-based multilingual subtitle generator
+│   ├── generate_eclipse_subtitles.py # ★ 100% RAW-based multilingual subtitle & YouTube chapters generator
 │   ├── create_eclipse_composite.py   # ★ High-resolution composite mosaic generator & JSON metadata
 │   ├── create_compact_clip.py        # 30s accelerated lightweight generator
 │   ├── stabilize_eclipse.py          # Core solar limb subpixel stabilizer
@@ -322,17 +357,21 @@ eclipse_assembler/
 │   ├── 03_video_realtime.mp4         # Stabilized totality (107.33s, speed 1x)
 │   ├── 04_timelapse_i10.mp4          # Stabilized partial egress (8.20s, speed x300)
 │   ├── 05_photo_6.mp4                # Letterboxed photo video (6.00s)
-│   ├── 06_composite_sinusoid_10.mp4  # 16:9 composite video (10.00s)
-│   ├── 06_composite_sinusoid_10.json # 📋 Frame timestamps metadata for composite
+│   ├── 06_composite_arc_10.mp4       # 16:9 composite arc video with contacts (10.00s)
+│   ├── 06_composite_arc_10.json      # 📋 Frame timestamps metadata for composite
 │   ├── full_eclipse.mp4              # ★ Complete master film (172.60s)
 │   ├── full_eclipse_subtitled.mp4    # 🍎 Master film with embedded QuickTime subtitles (ES + EN)
 │   ├── full_eclipse_es.srt           # 🇪🇸 Spanish subtitles (YouTube / VLC)
 │   ├── full_eclipse_en.srt           # 🇬🇧 English subtitles (YouTube / VLC)
 │   ├── full_eclipse.srt              # Master English subtitle file
+│   ├── youtube_chapters.txt          # 📺 Ready-to-paste YouTube chapters (Bilingual / ES / EN)
+│   ├── youtube_description.txt       # 📝 Complete YouTube video description with ephemeris metadata
 │   ├── full_eclipse_30s.mp4          # ⚡ Compact 30s accelerated film
 │   ├── eclipse_contacts_comparison.md# 📊 Markdown telemetry vs ephemeris comparison report
 │   ├── eclipse_contacts_comparison.json# 📋 JSON dataset of observational residuals
-│   └── eclipse_composite_*.png       # 🖼️ High-resolution composite artwork
+│   ├── eclipse_composite_arc_*.png   # 🖼️ High-resolution arc composite artwork (720p, 4K UHD)
+│   ├── eclipse_composite_circle_*.png# 🖼️ High-resolution circular/ellipse composite artwork
+│   └── eclipse_composite_sinusoid_*.png# 🖼️ High-resolution sinusoidal composite artwork (HD, 4K, 8K)
 │
 └── README.md                         # Project documentation
 ```
@@ -341,7 +380,7 @@ eclipse_assembler/
 
 ## 📊 Summary of Master Output Assets
 
-| Output Asset | Resolution | Frame Rate / Type | Duration / Size | Description |
+| Output Asset | Resolution / Format | Frame Rate / Type | Duration / Size | Description |
 | :--- | :--- | :--- | :--- | :--- |
 | **`00_title.mp4`** | 1280x720 | 30.0 fps | 5.00s (0.02 MB) | Cinematic title card with ephemeris metadata |
 | **`01_timelapse_i10.mp4`** | 1280x720 | 30.0 fps | 8.90s (1.31 MB) | Stabilized partial ingress ($R = 238.5\text{ px}$, speed x300) |
@@ -349,11 +388,13 @@ eclipse_assembler/
 | **`03_video_realtime.mp4`** | 1280x720 | 30.0 fps | 107.33s (13.71 MB) | Totality & corona in exact 1x Real-Time |
 | **`04_timelapse_i10.mp4`** | 1280x720 | 30.0 fps | 8.20s (2.66 MB) | Stabilized partial egress ($R = 237.5\text{ px}$, speed x300) |
 | **`05_photo_6.mp4`** | 1280x720 | 30.0 fps | 6.00s (0.12 MB) | Still photo scaled with black letterboxing |
-| **`06_composite_sinusoid_10.mp4`** | 1280x720 | 30.0 fps | 10.00s (0.05 MB) | Native 16:9 sinusoidal mosaic clip |
+| **`06_composite_arc_10.mp4`** | 1280x720 | 30.0 fps | 10.00s (0.05 MB) | Native 16:9 arc mosaic clip with prominent contacts |
 | **`full_eclipse.mp4`** | **1280x720** | **30.0 fps** | **172.60s (12.46 MB)** | 🎬 **Master film with title card & cinematic transitions** |
 | **`full_eclipse_subtitled.mp4`** | **1280x720** | **30.0 fps** | **172.60s (12.48 MB)** | 🍎 **Master film with dual embedded QuickTime tracks (`mov_text`)** |
 | **`full_eclipse_es.srt`** | SubRip | UTF-8 | 48 entries | 🇪🇸 **Astronomical subtitles in Spanish with speed multipliers** |
 | **`full_eclipse_en.srt`** | SubRip | UTF-8 | 48 entries | 🇬🇧 **Astronomical subtitles in English with speed multipliers** |
+| **`youtube_chapters.txt`** | Plain Text | UTF-8 | 8 chapters | 📺 **YouTube chapters formatted for video timestamps** |
+| **`youtube_description.txt`** | Plain Text | UTF-8 | Description | 📝 **Ready-to-paste YouTube description with ephemeris & chapters** |
 
 ---
 
