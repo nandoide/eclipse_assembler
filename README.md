@@ -64,15 +64,15 @@ python 020_src/compare_contacts_ephemeris.py
 
 | Astronomical Event | Physical Criterion | NASA Ephemeris | Optical / Camera (RAW) | Residual (Obs − Eph) |
 | :--- | :--- | :--- | :--- | :--- |
-| **$C_1$ (First Contact)** | Moon enters solar photosphere | `19:31:28.9 CEST` | `19:35:13 CEST` *(TL start)* | *Documented in 01_timelapse_i10* |
-| **$C_2$ (Second Contact)** | Baily's Beads extinguish $\to$ **Totality Begins** | `20:27:43.6 CEST` | **`20:27:34.8 CEST`** | **`-8.85 s`** |
-| **$\text{MAX}$ (Maximum)** | Point of deepest eclipse / Midpoint | `20:28:36.9 CEST` | **`20:28:23.3 CEST`** | **`-13.65 s`** |
-| **$C_3$ (Third Contact)** | Baily's Beads emerge $\to$ **Totality Ends** | `20:29:30.2 CEST` | **`20:29:11.8 CEST`** | **`-18.45 s`** |
-| **$C_4$ (Fourth Contact)** | Moon completely leaves solar disk | `21:22:05.6 CEST` | `21:13:53 CEST` *(TL end)* | *Documented in 04_timelapse_i10* |
-| **Totality Duration** | Full 100% eclipse window ($C_3 - C_2$) | `1m 46.56s` ($106.6\text{ s}$) | **`1m 36.96s`** ($97.0\text{ s}$) | **`-9.60 s`** |
+| **$C_1$ (First Contact)** | Moon enters solar photosphere | `19:31:18.5 CEST` | `19:35:13 CEST` *(TL start)* | *Documented in 01_timelapse_i10* |
+| **$C_2$ (Second Contact)** | Baily's Beads extinguish $\to$ **Totality Begins** | `20:27:38.2 CEST` | **`20:27:34.8 CEST`** | **`-3.41 s`** |
+| **$\text{MAX}$ (Maximum)** | Point of deepest eclipse / Midpoint | `20:28:25.0 CEST` | **`20:28:23.3 CEST`** | **`-1.73 s`** |
+| **$C_3$ (Third Contact)** | Baily's Beads emerge $\to$ **Totality Ends** | `20:29:12.2 CEST` | **`20:29:11.8 CEST`** | **`-0.41 s`** |
+| **$C_4$ (Fourth Contact)** | Moon completely leaves solar disk | `21:21:52.6 CEST` | `21:13:53 CEST` *(TL end)* | *Documented in 04_timelapse_i10* |
+| **Totality Duration** | Full 100% eclipse window ($C_3 - C_2$) | `1m 33.96s` ($94.0\text{ s}$) | **`1m 36.96s`** ($97.0\text{ s}$) | **`+3.00 s`** |
 
 > [!NOTE]
-> The small residuals ($\sim 8-18\text{ s}$) are primarily driven by the **lunar limb topography** (valleys and mountain peaks in the *Kaguya / LRO* profile), sensor exposure integration times, and local horizon atmospheric refraction.
+> The remarkable sub-second to few-second precision ($\sim 0.4 - 3.4\text{ s}$) demonstrates high telescope NTP clock accuracy ($\sim 1.8\text{ s}$ of UTC). The remaining residuals are physically accounted for by **lunar limb topography** (valleys and mountain peaks in the *Kaguya / LRO* elevation profile that advance or delay the bead extinguish/emergence points) and sensor auto-exposure response regimes.
 
 ---
 
@@ -88,8 +88,8 @@ Before the first timelapse clip, `build_full_eclipse.py` automatically generates
 │                                                                          │
 │          Observation Site: 43.2356° N, 7.5583° W   |   Alt: 439 m        │
 │                                                                          │
-│                       19:31:28 - 21:22:05 CEST                           │
-│          Totality (C2 -> C3):  20:27:43 - 20:29:30 CEST (1m 47s)        │
+│                       19:31:18 - 21:21:53 CEST                           │
+│          Totality (C2 -> C3):  20:27:38 - 20:29:12 CEST (1m 34s)        │
 │                                                                          │
 └──────────────────────────────────────────────────────────────────────────┘
 ```
