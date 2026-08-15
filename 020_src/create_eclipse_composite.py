@@ -41,6 +41,8 @@ import datetime
 import math
 import cv2
 import numpy as np
+from PIL import Image, ImageDraw, ImageFont
+from scipy.interpolate import interp1d
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 import eclipse_ephemeris_db as eedb
@@ -166,23 +168,31 @@ def sample_eclipse_sequence(
     """
     resolved = resolve_output_dir(out_dir)
 
-    def find_file(patterns):
-        for p in patterns:
-            candidate = os.path.join(resolved, p)
-            if os.path.exists(candidate):
-                return candidate
+    def find_file(prefix_or_patterns):
         repo_root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
         in_dir = os.path.join(repo_root, "010_in")
-        for p in patterns:
-            candidate = os.path.join(in_dir, p)
-            if os.path.exists(candidate):
-                return candidate
+        search_dirs = [resolved, in_dir]
+
+        patterns = prefix_or_patterns if isinstance(prefix_or_patterns, list) else [prefix_or_patterns]
+        for sdir in search_dirs:
+            if not os.path.exists(sdir):
+                continue
+            dir_files = sorted(os.listdir(sdir))
+            for p in patterns:
+                # 1. Exact match
+                candidate = os.path.join(sdir, p)
+                if os.path.exists(candidate):
+                    return candidate
+                # 2. Prefix or substring match
+                for fname in dir_files:
+                    if fname.endswith((".mp4", ".mov", ".avi")) and (fname.startswith(p) or p in fname):
+                        return os.path.join(sdir, fname)
         return None
 
-    p_ingress = find_file(["01_timelapse.mp4", "01_timelapse", "partial_ingress.mp4"])
-    p_pre_tot = find_file(["02_video_slowdown.mp4", "02_video_slowdown_10.mp4", "02_video_slowdown_10", "pre_totality.mp4"])
-    p_totality = find_file(["03_video_realtime.mp4", "03_video_realtime", "03_video.mp4", "totality.mp4"])
-    p_egress = find_file(["04_timelapse.mp4", "04_timelapse", "partial_egress.mp4"])
+    p_ingress = find_file(["01_timelapse", "01_", "partial_ingress"])
+    p_pre_tot = find_file(["02_video_slowdown", "02_", "pre_totality"])
+    p_totality = find_file(["03_video_realtime", "03_video", "03_", "totality"])
+    p_egress = find_file(["04_timelapse", "04_", "partial_egress"])
 
     paths = {
         "ingress":  p_ingress,
@@ -339,19 +349,22 @@ def sample_eclipse_sequence(
 # LAYOUT ENGINES
 # ─────────────────────────────────────────────────────────────────────────────
 
-def render_consistent_scale(samples, positions, width=1280, height=720, disk_scale_factor=0.88):
+def render_consistent_scale(samples, positions, width=1280, height=720, disk_scale_factor=0.78, show_labels=False):
     """
     Composites all frames into the black canvas with consistent disk scaling and soft additive blending.
+    Uses minimum distance between adjacent frames to ensure clean, non-overlapping spacing.
+    Optionally overlays centered astronomical timestamp labels (HH:MM:SS) below each frame.
     """
     canvas = np.zeros((height, width, 3), dtype=np.float32)
     N = len(positions)
 
-    # Compute mean distance between adjacent steps to define universal disk diameter
+    # Compute pairwise adjacent separation distances
     diffs = np.diff(positions, axis=0)
     dists = np.sqrt(np.sum(diffs**2, axis=1))
-    mean_dist = float(np.mean(dists)) if len(dists) > 0 else 300.0
+    min_dist = float(np.min(dists)) if len(dists) > 0 else 300.0
 
-    target_disk_d = mean_dist * disk_scale_factor
+    # Scale disk relative to minimum adjacent distance to guarantee zero overlap
+    target_disk_d = min_dist * disk_scale_factor
     scale = target_disk_d / 500.0  # 500 px is solar disk diameter in cropped patch
     out_patch_sz = max(64, int(round(1280 * scale)))
     out_patch_sz = (out_patch_sz // 2) * 2
@@ -387,44 +400,149 @@ def render_consistent_scale(samples, positions, width=1280, height=720, disk_sca
             blended = np.maximum(curr_reg, patch_reg)
             canvas[cy1:cy2, cx1:cx2] = blended
 
-    return np.clip(canvas, 0, 255).astype(np.uint8)
+    out_img = np.clip(canvas, 0, 255).astype(np.uint8)
+
+    # Overlay centered HH:MM:SS timestamp labels if requested
+    if show_labels:
+        img_rgb = cv2.cvtColor(out_img, cv2.COLOR_BGR2RGB)
+        pil_img = Image.fromarray(img_rgb)
+        draw = ImageDraw.Draw(pil_img)
+
+        # Dynamic font sizing scaled to canvas and disk dimensions
+        font_sz = max(11, int(round(target_disk_d * 0.08)))
+
+        font = None
+        for fp in [
+            "/System/Library/Fonts/Helvetica.ttc",
+            "/System/Library/Fonts/Supplemental/Arial.ttf",
+            "/Library/Fonts/Arial.ttf",
+            "/System/Library/Fonts/SFNS.ttf",
+            "/System/Library/Fonts/Menlo.ttc"
+        ]:
+            if os.path.exists(fp):
+                try:
+                    font = ImageFont.truetype(fp, font_sz)
+                    break
+                except Exception:
+                    pass
+        if font is None:
+            font = ImageFont.load_default()
+
+        label_offset_y = (target_disk_d / 2.0) + (font_sz * 0.45)
+
+        for i in range(N):
+            s = samples[i]
+            time_str = s.get("timestamp_str", "")
+            if not time_str:
+                continue
+
+            px, py = positions[i]
+            bbox = draw.textbbox((0, 0), time_str, font=font)
+            tw = bbox[2] - bbox[0]
+            th = bbox[3] - bbox[1]
+
+            tx = px - tw / 2.0
+            ty = py + label_offset_y
+
+            # Keep within canvas bounds
+            if ty + th > height - 10:
+                ty = py - (target_disk_d / 2.0) - th - (font_sz * 0.45)
+
+            # Soft dark drop shadow for high contrast
+            draw.text((tx + 1, ty + 1), time_str, font=font, fill=(0, 0, 0))
+            draw.text((tx - 1, ty + 1), time_str, font=font, fill=(0, 0, 0))
+            draw.text((tx + 1, ty - 1), time_str, font=font, fill=(0, 0, 0))
+            draw.text((tx - 1, ty - 1), time_str, font=font, fill=(0, 0, 0))
+
+            # Foreground text color: subtle gold for totality, crisp white for partials
+            text_color = (255, 230, 160) if s.get("phase") == "totality" else (235, 235, 240)
+            draw.text((tx, ty), time_str, font=font, fill=text_color)
+
+        out_img = cv2.cvtColor(np.array(pil_img), cv2.COLOR_RGB2BGR)
+
+    return out_img
 
 
-def generate_circular_composite(samples, width=1280, height=720, orbit_radius=None, direction="ccw", disk_scale_factor=0.88):
+def generate_circular_composite(samples, width=1280, height=720, orbit_radius=None, direction="cw", disk_scale_factor=0.78, show_labels=False):
     cx, cy = width / 2.0, height / 2.0
-    R = orbit_radius or (min(width, height) * 0.38)
+
+    # For square format (W == H): Rx == Ry (perfect circle)
+    # For non-square formats (16:9, 9:16, etc.): Rx and Ry scale proportionally to width and height,
+    # forming an ellipse that adapts to the canvas contour with generous margins.
+    if orbit_radius is not None:
+        if width == height:
+            rx, ry = float(orbit_radius), float(orbit_radius)
+        else:
+            scale_r = float(orbit_radius) / (min(width, height) * 0.36)
+            rx = width * 0.36 * scale_r
+            ry = height * 0.36 * scale_r
+    else:
+        rx = width * 0.36
+        ry = height * 0.36
+
     N = len(samples)
-    angles = np.linspace(-math.pi / 2, 3 * math.pi / 2, N, endpoint=False)
-    if direction == "cw":
-        angles = -angles
+
+    # Locate the peak totality frame (grand corona) to anchor exactly at 12 o'clock (top)
+    apex_idx = None
+    for i, s in enumerate(samples):
+        if s.get("label") == "grand_corona":
+            apex_idx = i
+            break
+    if apex_idx is None:
+        tot_indices = [i for i, s in enumerate(samples) if s["phase"] == "totality"]
+        apex_idx = tot_indices[len(tot_indices) // 2] if tot_indices else (N - 1) / 2.0
+
+    # Dense sampling along ellipse perimeter for equal arc-length step
+    dense_theta = np.linspace(-math.pi / 2.0, -math.pi / 2.0 + 2.0 * math.pi, 2000)
+    dense_x = cx + rx * np.cos(dense_theta)
+    dense_y = cy + ry * np.sin(dense_theta)
+
+    dx = np.diff(dense_x)
+    dy = np.diff(dense_y)
+    cum_len = np.concatenate([[0.0], np.cumsum(np.sqrt(dx**2 + dy**2))])
+    total_len = cum_len[-1]
+
+    step_s = total_len / float(N)
+    interp_x = interp1d(cum_len, dense_x)
+    interp_y = interp1d(cum_len, dense_y)
 
     positions = np.zeros((N, 2), dtype=np.float32)
-    for i, theta in enumerate(angles):
-        positions[i, 0] = cx + R * math.cos(theta)
-        positions[i, 1] = cy + R * math.sin(theta)
+    for i in range(N):
+        if direction == "ccw":
+            s_val = (total_len - (i - apex_idx) * step_s) % total_len
+        else:
+            s_val = ((i - apex_idx) * step_s) % total_len
+        positions[i, 0] = interp_x(s_val)
+        positions[i, 1] = interp_y(s_val)
 
-    return render_consistent_scale(samples, positions, width=width, height=height, disk_scale_factor=disk_scale_factor)
+    return render_consistent_scale(samples, positions, width=width, height=height, disk_scale_factor=disk_scale_factor, show_labels=show_labels)
 
 
-def generate_sinusoid_composite(samples, width=1280, height=720, margin=None, amplitude=None, disk_scale_factor=0.88):
+def generate_sinusoid_composite(samples, width=1280, height=720, margin=None, amplitude=None, disk_scale_factor=0.78, show_labels=False):
     N = len(samples)
     mx = margin or int(width * 0.08)
-    amp = amplitude or int(height * 0.30)
+    amp = amplitude or int(height * 0.25)
     cy = height / 2.0
 
-    xs = np.linspace(mx, width - mx, N)
-    positions = np.zeros((N, 2), dtype=np.float32)
-    for i, x in enumerate(xs):
-        frac = i / float(N - 1)
-        # S-curve: goes high at ingress, inflects through center totality, dips at egress
-        y = cy - amp * math.sin(frac * 2.0 * math.pi - math.pi / 2.0)
-        positions[i, 0] = x
-        positions[i, 1] = y
+    # Equal arc-length parameterization along the sinusoidal wave to prevent bunching at crests
+    dense_t = np.linspace(0.0, 1.0, 2000)
+    dense_x = np.linspace(mx, width - mx, 2000)
+    dense_y = cy - amp * np.sin(dense_t * 2.0 * np.pi - math.pi / 2.0)
 
-    return render_consistent_scale(samples, positions, width=width, height=height, disk_scale_factor=disk_scale_factor)
+    dx = np.diff(dense_x)
+    dy = np.diff(dense_y)
+    cum_len = np.concatenate([[0.0], np.cumsum(np.sqrt(dx**2 + dy**2))])
+    total_len = cum_len[-1]
+
+    target_s = np.linspace(0.0, total_len, N)
+    interp_x = interp1d(cum_len, dense_x)
+    interp_y = interp1d(cum_len, dense_y)
+
+    positions = np.column_stack([interp_x(target_s), interp_y(target_s)]).astype(np.float32)
+    return render_consistent_scale(samples, positions, width=width, height=height, disk_scale_factor=disk_scale_factor, show_labels=show_labels)
 
 
-def generate_vertical_composite(samples, width=2160, height=3840, margin=None, disk_scale_factor=0.88):
+def generate_vertical_composite(samples, width=2160, height=3840, margin=None, disk_scale_factor=0.78, show_labels=False):
     N = len(samples)
     my = margin or int(height * 0.08)
     cx = width / 2.0
@@ -435,27 +553,33 @@ def generate_vertical_composite(samples, width=2160, height=3840, margin=None, d
         positions[i, 0] = cx
         positions[i, 1] = y
 
-    return render_consistent_scale(samples, positions, width=width, height=height, disk_scale_factor=disk_scale_factor)
+    return render_consistent_scale(samples, positions, width=width, height=height, disk_scale_factor=disk_scale_factor, show_labels=show_labels)
 
 
-def generate_vertical_sinusoid_composite(samples, width=2160, height=3840, margin=None, amplitude=None, disk_scale_factor=0.88):
+def generate_vertical_sinusoid_composite(samples, width=2160, height=3840, margin=None, amplitude=None, disk_scale_factor=0.78, show_labels=False):
     N = len(samples)
     my = margin or int(height * 0.08)
-    amp = amplitude or int(width * 0.28)
+    amp = amplitude or int(width * 0.25)
     cx = width / 2.0
 
-    ys = np.linspace(my, height - my, N)
-    positions = np.zeros((N, 2), dtype=np.float32)
-    for i, y in enumerate(ys):
-        frac = i / float(N - 1)
-        x = cx + amp * math.sin(frac * 2.0 * math.pi)
-        positions[i, 0] = x
-        positions[i, 1] = y
+    dense_t = np.linspace(0.0, 1.0, 2000)
+    dense_y = np.linspace(my, height - my, 2000)
+    dense_x = cx + amp * np.sin(dense_t * 2.0 * math.pi)
 
-    return render_consistent_scale(samples, positions, width=width, height=height, disk_scale_factor=disk_scale_factor)
+    dx = np.diff(dense_x)
+    dy = np.diff(dense_y)
+    cum_len = np.concatenate([[0.0], np.cumsum(np.sqrt(dx**2 + dy**2))])
+    total_len = cum_len[-1]
+
+    target_s = np.linspace(0.0, total_len, N)
+    interp_x = interp1d(cum_len, dense_x)
+    interp_y = interp1d(cum_len, dense_y)
+
+    positions = np.column_stack([interp_x(target_s), interp_y(target_s)]).astype(np.float32)
+    return render_consistent_scale(samples, positions, width=width, height=height, disk_scale_factor=disk_scale_factor, show_labels=show_labels)
 
 
-def generate_diagonal_composite(samples, width=1280, height=720, direction="bottom_left_to_top_right", margin=None, disk_scale_factor=0.88):
+def generate_diagonal_composite(samples, width=1280, height=720, direction="bottom_left_to_top_right", margin=None, disk_scale_factor=0.78, show_labels=False):
     N = len(samples)
     m = margin or int(min(width, height) * 0.08)
 
@@ -467,10 +591,10 @@ def generate_diagonal_composite(samples, width=1280, height=720, direction="bott
         ys = np.linspace(m, height - m, N)
 
     positions = np.column_stack([xs, ys]).astype(np.float32)
-    return render_consistent_scale(samples, positions, width=width, height=height, disk_scale_factor=disk_scale_factor)
+    return render_consistent_scale(samples, positions, width=width, height=height, disk_scale_factor=disk_scale_factor, show_labels=show_labels)
 
 
-def generate_horizontal_composite(samples, width=1280, height=720, margin=None, disk_scale_factor=0.88):
+def generate_horizontal_composite(samples, width=1280, height=720, margin=None, disk_scale_factor=0.78, show_labels=False):
     N = len(samples)
     mx = margin or int(width * 0.05)
     cy = height / 2.0
@@ -481,24 +605,30 @@ def generate_horizontal_composite(samples, width=1280, height=720, margin=None, 
         positions[i, 0] = x
         positions[i, 1] = cy
 
-    return render_consistent_scale(samples, positions, width=width, height=height, disk_scale_factor=disk_scale_factor)
+    return render_consistent_scale(samples, positions, width=width, height=height, disk_scale_factor=disk_scale_factor, show_labels=show_labels)
 
 
-def generate_arc_composite(samples, width=1280, height=720, margin_x=None, disk_scale_factor=0.88):
+def generate_arc_composite(samples, width=1280, height=720, margin_x=None, disk_scale_factor=0.78, show_labels=False):
     N = len(samples)
     mx = margin_x or int(width * 0.08)
     cy = height * 0.70
-    h_arc = height * 0.45
+    h_arc = height * 0.40
 
-    xs = np.linspace(mx, width - mx, N)
-    positions = np.zeros((N, 2), dtype=np.float32)
-    for i, x in enumerate(xs):
-        norm_x = (x - width / 2.0) / ((width - 2 * mx) / 2.0)
-        y = cy - h_arc * (1.0 - norm_x**2)
-        positions[i, 0] = x
-        positions[i, 1] = y
+    dense_x = np.linspace(mx, width - mx, 2000)
+    norm_x = (dense_x - width / 2.0) / ((width - 2 * mx) / 2.0)
+    dense_y = cy - h_arc * (1.0 - norm_x**2)
 
-    return render_consistent_scale(samples, positions, width=width, height=height, disk_scale_factor=disk_scale_factor)
+    dx = np.diff(dense_x)
+    dy = np.diff(dense_y)
+    cum_len = np.concatenate([[0.0], np.cumsum(np.sqrt(dx**2 + dy**2))])
+    total_len = cum_len[-1]
+
+    target_s = np.linspace(0.0, total_len, N)
+    interp_x = interp1d(cum_len, dense_x)
+    interp_y = interp1d(cum_len, dense_y)
+
+    positions = np.column_stack([interp_x(target_s), interp_y(target_s)]).astype(np.float32)
+    return render_consistent_scale(samples, positions, width=width, height=height, disk_scale_factor=disk_scale_factor, show_labels=show_labels)
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -511,12 +641,13 @@ def build_composite(
     height=720,
     orbit_radius=None,
     direction=None,
-    disk_scale_factor=0.88,
+    disk_scale_factor=0.78,
     margin=None,
     amplitude=None,
     clock_offset_s=44.3,
     date_str=None,
     force_db=False,
+    show_labels=False,
     out_dir="040_out",
     output_path=None,
 ):
@@ -529,6 +660,7 @@ def build_composite(
     print(f"  Layout Mode       : {layout.upper()}")
     print(f"  Resolution        : {width}x{height} px")
     print(f"  Disk Scale Factor : {disk_scale_factor:.2f}")
+    print(f"  Labels (Timestamps): {'ENABLED (HH:MM:SS)' if show_labels else 'DISABLED'}")
 
     samples = sample_eclipse_sequence(
         out_dir=resolved_out,
@@ -547,14 +679,15 @@ def build_composite(
     print(f"  Sample Time Range : {time_range_str} ({first_dt.strftime('%H:%M:%S')} to {last_dt.strftime('%H:%M:%S')})")
 
     # Layout selection
-    if layout in ["circle", "ring"]:
+    if layout in ["circle", "ring", "ellipse", "oval"]:
         canvas = generate_circular_composite(
             samples, width=width, height=height,
             orbit_radius=orbit_radius,
-            direction=direction or "ccw",
+            direction=direction or "cw",
             disk_scale_factor=disk_scale_factor,
+            show_labels=show_labels,
         )
-        suffix = "circle"
+        suffix = "circle" if width == height else "ellipse"
 
     elif layout in ["sinusoid", "s-curve", "s", "sinusoidal"]:
         canvas = generate_sinusoid_composite(
@@ -562,6 +695,7 @@ def build_composite(
             margin=margin,
             amplitude=amplitude,
             disk_scale_factor=disk_scale_factor,
+            show_labels=show_labels,
         )
         suffix = "sinusoid"
 
@@ -570,6 +704,7 @@ def build_composite(
             samples, width=width, height=height,
             margin=margin,
             disk_scale_factor=disk_scale_factor,
+            show_labels=show_labels,
         )
         suffix = "vertical"
 
@@ -579,6 +714,7 @@ def build_composite(
             margin=margin,
             amplitude=amplitude,
             disk_scale_factor=disk_scale_factor,
+            show_labels=show_labels,
         )
         suffix = "vertical_s"
 
@@ -588,6 +724,7 @@ def build_composite(
             direction=direction or "bottom_left_to_top_right",
             margin=margin,
             disk_scale_factor=disk_scale_factor,
+            show_labels=show_labels,
         )
         suffix = "diagonal"
 
@@ -596,6 +733,7 @@ def build_composite(
             samples, width=width, height=height,
             margin=margin,
             disk_scale_factor=disk_scale_factor,
+            show_labels=show_labels,
         )
         suffix = "horizontal"
 
@@ -604,6 +742,7 @@ def build_composite(
             samples, width=width, height=height,
             margin_x=margin,
             disk_scale_factor=disk_scale_factor,
+            show_labels=show_labels,
         )
         suffix = "arc"
 
@@ -630,6 +769,7 @@ def build_composite(
         "width": width,
         "height": height,
         "disk_scale_factor": disk_scale_factor,
+        "show_labels": show_labels,
         "sample_count": len(samples),
         "first_sample_time": first_dt.strftime("%H:%M:%S CEST"),
         "last_sample_time": last_dt.strftime("%H:%M:%S CEST"),
@@ -675,7 +815,7 @@ if __name__ == "__main__":
         description="Generate UHD & custom aspect-ratio solar eclipse composite artwork."
     )
     parser.add_argument("--layout", "-l", type=str,
-                        choices=["sinusoid", "s-curve", "vertical", "vertical-s", "mobile", "circle", "ring", "diagonal", "horizontal", "arc", "all"],
+                        choices=["sinusoid", "s-curve", "vertical", "vertical-s", "mobile", "circle", "ring", "ellipse", "oval", "diagonal", "horizontal", "arc", "all"],
                         default="sinusoid",
                         help="Composition layout (default: sinusoid)")
     parser.add_argument("--size", "-s", type=int, default=None,
@@ -684,8 +824,8 @@ if __name__ == "__main__":
                         help="Canvas width in pixels (default: 1280 for landscape, 2160 for mobile)")
     parser.add_argument("--height", "-H", type=int, default=None,
                         help="Canvas height in pixels (default: 720 for landscape, 3840 for mobile)")
-    parser.add_argument("--scale-factor", type=float, default=0.88,
-                        help="Disk scale factor relative to separation distance (default: 0.88)")
+    parser.add_argument("--scale-factor", type=float, default=0.78,
+                        help="Disk scale factor relative to separation distance (default: 0.78)")
     parser.add_argument("--margin", type=int, default=None,
                         help="Canvas margin padding in pixels (default: auto)")
     parser.add_argument("--amplitude", type=int, default=None,
@@ -700,6 +840,8 @@ if __name__ == "__main__":
                         help="Eclipse date YYYY-MM-DD (default: auto-detect)")
     parser.add_argument("--force-db", action="store_true",
                         help="Force rebuilding/refreshing eclipse database")
+    parser.add_argument("--show-labels", "--timestamps", "--labels", "-t", action="store_true",
+                        help="Overlay centered HH:MM:SS timestamp labels below each solar disk")
     parser.add_argument("--output", "-o", type=str, default=None,
                         help="Custom output path (default: 040_out/eclipse_composite_<layout>_<resolution>.png)")
     args = parser.parse_args()
@@ -728,6 +870,7 @@ if __name__ == "__main__":
             clock_offset_s=args.offset_seconds,
             date_str=args.date,
             force_db=args.force_db,
+            show_labels=args.show_labels,
             out_dir="040_out",
             output_path=args.output if args.layout != "all" else None,
         )
