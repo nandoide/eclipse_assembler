@@ -140,26 +140,47 @@ def sample_eclipse_sequence(
     crop_size=1280,
 ):
     """
-    Extracts keyframes with trimmed extreme partial ends and full symmetric totality entry/exit:
-      - Ingress: 2 well-defined crescents (omits first full sun).
-      - Pre-totality: 2 thin crescents approaching C2.
-      - Totality: 6 symmetric keyframes (f30, f70, f600, f1200, f2700, f2850).
-      - Egress: 4 crescents exiting C3 (omits last full sun).
-    Total: 14 balanced, physically aligned keyframes.
+    Extracts keyframes from CoC output videos (or input directory):
+      - 01_timelapse (ingress): 2 crescents.
+      - 02_video_slowdown (pre-totality): 2 thin crescents.
+      - 03_video_realtime (totality): 6 symmetric keyframes (beads, chromosphere, corona).
+      - 04_timelapse (egress): 4 crescents.
+    If only 1 video file is present, samples 14 evenly distributed keyframes across that single video.
     """
     resolved = resolve_output_dir(out_dir)
+
+    def find_file(patterns):
+        for p in patterns:
+            candidate = os.path.join(resolved, p)
+            if os.path.exists(candidate):
+                return candidate
+        # Fallback to 010_in if not yet rendered in 040_out
+        repo_root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+        in_dir = os.path.join(repo_root, "010_in")
+        for p in patterns:
+            candidate = os.path.join(in_dir, p)
+            if os.path.exists(candidate):
+                return candidate
+        return None
+
+    p_ingress = find_file(["01_timelapse.mp4", "01_timelapse", "partial_ingress.mp4"])
+    p_pre_tot = find_file(["02_video_slowdown.mp4", "02_video_slowdown_10.mp4", "02_video_slowdown_10", "pre_totality.mp4"])
+    p_totality = find_file(["03_video_realtime.mp4", "03_video_realtime", "03_video.mp4", "totality.mp4"])
+    p_egress = find_file(["04_timelapse.mp4", "04_timelapse", "partial_egress.mp4"])
+
     paths = {
-        "ingress":  os.path.join(resolved, "partial_ingress.mp4"),
-        "pre_tot":  os.path.join(resolved, "pre_totality.mp4"),
-        "totality": os.path.join(resolved, "totality.mp4"),
-        "egress":   os.path.join(resolved, "partial_egress.mp4"),
+        "ingress":  p_ingress,
+        "pre_tot":  p_pre_tot,
+        "totality": p_totality,
+        "egress":   p_egress,
     }
 
-    caps = {k: cv2.VideoCapture(v) for k, v in paths.items()}
+    # Filter available caps
+    caps = {k: cv2.VideoCapture(v) for k, v in paths.items() if v and os.path.exists(v)}
     counts = {k: int(c.get(cv2.CAP_PROP_FRAME_COUNT)) for k, c in caps.items()}
 
     def read_at(cap, idx, total):
-        if total <= 0:
+        if total <= 0 or cap is None:
             return None
         cap.set(cv2.CAP_PROP_POS_FRAMES, max(0, min(total - 1, int(idx))))
         ret, f = cap.read()
@@ -167,40 +188,59 @@ def sample_eclipse_sequence(
 
     samples = []
 
-    # 1. Ingress Partials (omitting the first full sun, starting from ~38% bite)
-    for frac in [0.38, 0.78]:
-        f = read_at(caps["ingress"], frac * (counts["ingress"] - 1), counts["ingress"])
-        if f is not None:
-            f = equalize_solar_color(f)
-            samples.append({"phase": "partial", "label": "ingress", "img": clean_and_crop_square(f, crop_size=crop_size, is_totality=False)})
+    # Single-clip case: if only 1 video available
+    if len(caps) == 1:
+        single_key = list(caps.keys())[0]
+        cap = caps[single_key]
+        total = counts[single_key]
+        for frac in np.linspace(0.05, 0.95, 14):
+            f = read_at(cap, frac * (total - 1), total)
+            if f is not None:
+                f_eq = equalize_solar_color(f)
+                samples.append({"phase": "partial", "label": f"frame_{int(frac*100)}pct", "img": clean_and_crop_square(f_eq, crop_size=crop_size, is_totality=False)})
+        cap.release()
+        return samples
+
+    # 1. Ingress Partials
+    if "ingress" in caps and counts["ingress"] > 0:
+        for frac in [0.38, 0.78]:
+            f = read_at(caps["ingress"], frac * (counts["ingress"] - 1), counts["ingress"])
+            if f is not None:
+                f = equalize_solar_color(f)
+                samples.append({"phase": "partial", "label": "ingress", "img": clean_and_crop_square(f, crop_size=crop_size, is_totality=False)})
 
     # 2. Pre-Totality Thin Crescents
-    for frac in [0.38, 0.78]:
-        f = read_at(caps["pre_tot"], frac * (counts["pre_tot"] - 1), counts["pre_tot"])
-        if f is not None:
-            f = equalize_solar_color(f)
-            samples.append({"phase": "partial", "label": "pre_totality", "img": clean_and_crop_square(f, crop_size=crop_size, is_totality=False)})
+    if "pre_tot" in caps and counts["pre_tot"] > 0:
+        for frac in [0.38, 0.78]:
+            f = read_at(caps["pre_tot"], frac * (counts["pre_tot"] - 1), counts["pre_tot"])
+            if f is not None:
+                f = equalize_solar_color(f)
+                samples.append({"phase": "partial", "label": "pre_totality", "img": clean_and_crop_square(f, crop_size=crop_size, is_totality=False)})
 
-    # 3. Totality Keyframes (symmetric entrance f30, f70 -> grand corona -> egress f2700, f2850)
-    tot_indices = [
-        (30,   "ingress_beads"),
-        (70,   "ingress_chromosphere"),
-        (600,  "inner_corona"),
-        (1200, "grand_corona"),
-        (2700, "egress_chromosphere"),
-        (2850, "egress_beads"),
-    ]
-    for fi, label in tot_indices:
-        f = read_at(caps["totality"], fi, counts["totality"])
-        if f is not None:
-            samples.append({"phase": "totality", "label": label, "img": clean_and_crop_square(f, crop_size=crop_size, is_totality=True)})
+    # 3. Totality Keyframes
+    if "totality" in caps and counts["totality"] > 0:
+        tot_indices = [
+            (30,   "ingress_beads"),
+            (70,   "ingress_chromosphere"),
+            (600,  "inner_corona"),
+            (1200, "grand_corona"),
+            (2700, "egress_chromosphere"),
+            (2850, "egress_beads"),
+        ]
+        tot_total = counts["totality"]
+        for fi, label in tot_indices:
+            actual_fi = min(tot_total - 1, fi)
+            f = read_at(caps["totality"], actual_fi, tot_total)
+            if f is not None:
+                samples.append({"phase": "totality", "label": label, "img": clean_and_crop_square(f, crop_size=crop_size, is_totality=True)})
 
-    # 4. Egress Partials (starting right after C3, ending at ~65% bite without last full sun)
-    for frac in [0.15, 0.35, 0.55, 0.75]:
-        f = read_at(caps["egress"], frac * (counts["egress"] - 1), counts["egress"])
-        if f is not None:
-            f = equalize_solar_color(f)
-            samples.append({"phase": "partial", "label": "egress", "img": clean_and_crop_square(f, crop_size=crop_size, is_totality=False)})
+    # 4. Egress Partials
+    if "egress" in caps and counts["egress"] > 0:
+        for frac in [0.15, 0.35, 0.55, 0.75]:
+            f = read_at(caps["egress"], frac * (counts["egress"] - 1), counts["egress"])
+            if f is not None:
+                f = equalize_solar_color(f)
+                samples.append({"phase": "partial", "label": "egress", "img": clean_and_crop_square(f, crop_size=crop_size, is_totality=False)})
 
     for c in caps.values():
         c.release()

@@ -1,129 +1,314 @@
 #!/usr/bin/env python3
 """
-Automated Pipeline for Solar Eclipse Processing & Master Film Assembly
-========================================================================
-Processes and assembles the 2026 total solar eclipse footage into a single,
-perfectly stabilized and centered cinematic master film (full_eclipse.mp4).
+Automated Pipeline for Solar Eclipse Processing & Master Film Assembly (CoC Architecture)
+========================================================================================
+Processes and assembles solar eclipse and astronomical footage using Convention over
+Configuration (CoC). File names in '010_in/' define sequence ordering, asset types,
+and temporal duration parameters.
 
-Pipeline Steps:
-  1. Partial Ingress (partial_in.mp4 / partial_ingress.mp4):
-     Subpixel solar limb stabilization (R ≈ 238.5 px) and optical centering.
-  2. Pre-totality Approach (pretotal.mp4 / pre_totality.mp4):
-     Automatic corrupt/black intervalometer frame filtering, time-lapse acceleration
-     to target duration (default: 30.0s), solar limb stabilization (R ≈ 238.0 px),
-     dynamic White Balance (chromaticity) equalization, and temporal luminance continuity smoothing.
-  3. Totality (total.mp4 / totality.mp4):
-     Lunar silhouette and solar corona tracking (R ≈ 246.0 px) at 30 fps,
-     inheriting exact C2 transition boundary alignment (+12.5 px, +7.5 px).
-  4. Partial Egress (partial_out.mp4 / partial_egress.mp4):
-     Subpixel solar limb stabilization (R ≈ 237.5 px) with adaptive thresholding,
-     inheriting exact C3 transition boundary alignment (+35.0 px, +24.0 px).
-  5. Master Film Assembly (full_eclipse.mp4):
-     Seamless concatenation with customizable cinematic transitions:
-     - 'fade_to_black': Freeze A -> Smooth fade out to black -> Pure black pause -> Smooth fade in -> Freeze B
-     - 'hard': Freeze A -> Instant cut -> Freeze B
-     - 'crossfade': Freeze A -> Smooth cross-dissolve -> Freeze B
+Supported CoC Filename Conventions in '010_in/':
+  - '01_timelapse.mp4':
+      Timelapse capture at 1:1 native frame rate, with subpixel solar limb stabilization.
+  - '02_video_slowdown_10.mp4' (or '02_video_slowdown.mp4', default 10s):
+      Intervalometer / dense burst video with automatic corrupt/black frame filtering,
+      temporal resampling to specified seconds, solar limb stabilization, and luminance smoothing.
+  - '03_video_realtime.mp4' (or '03_video.mp4'):
+      Continuous 1x real-time video (30 fps) with lunar silhouette, corona, and Baily's beads tracking.
+  - '04_timelapse.mp4':
+      Timelapse capture at 1:1 native frame rate with solar limb stabilization.
+  - '05_photo_6.jpg' (or '05_photo.png', default 10s):
+      Still photo scaled to fit master project canvas (preserving aspect ratio) for specified duration.
+  - '06_composite_sinusoid_10' (or '06_composite_circle_3840x2160_10', default 10s):
+      Generates composite mosaic artwork on-the-fly, fits to master project canvas, and inserts for specified duration.
 
-Authors: Fernando (nandoide) & Antigravity (Google Gemini 3.6 Flash High)
-Workspace: eclipse_assembler
+Dynamic Resolution Detection:
+  - Master project resolution (W, H) and optical center (W/2, H/2) are automatically extracted
+    from the first video/timelapse or photo asset in '010_in/'.
+
+Authors: Fernando (nandoide) & Antigravity (Google Deepmind)
+Workspace: eclipse_assembler (branch: multi)
 """
 
 import os
 import sys
+import re
 import argparse
 import subprocess
 import cv2
 import numpy as np
 from tqdm import tqdm
-from scipy.optimize import minimize
 from scipy.ndimage import uniform_filter1d
 
-from stabilize_eclipse import stabilize_video
+# Import composite engine for on-the-fly composite asset generation
+sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+import create_eclipse_composite as cec
 
 
-def stabilize_and_accelerate_pre_totality(
+# ─────────────────────────────────────────────────────────────────────────────
+# COC PARSER & ASSET DISCOVERY
+# ─────────────────────────────────────────────────────────────────────────────
+
+def parse_coc_filename(filepath):
+    """
+    Parses CoC metadata from a filename in 010_in/.
+    Returns dict:
+      {
+        'index': int,
+        'raw_name': str,
+        'path': str,
+        'asset_type': 'timelapse' | 'video_slowdown' | 'video_realtime' | 'photo' | 'composite',
+        'duration': float (default: 10.0 for photo/composite/slowdown),
+        'layout': str (for composite, e.g. 'sinusoid', 'circle', etc.),
+        'comp_width': int (for composite, default 3840),
+        'comp_height': int (for composite, default 3840),
+      }
+    or None if non-compliant.
+    """
+    basename = os.path.basename(filepath)
+    name_no_ext, ext = os.path.splitext(basename)
+    ext_lower = ext.lower()
+
+    # Pattern: ^(?P<idx>\d+)_(?P<rest>.+)$
+    m = re.match(r"^(\d+)_(.+)$", name_no_ext)
+    if not m:
+        return None
+
+    idx = int(m.group(1))
+    tokens = m.group(2).split('_')
+
+    primary_token = tokens[0].lower()
+
+    # Defaults
+    asset_type = None
+    duration = 10.0
+    layout = "sinusoid"
+    comp_w = 3840
+    comp_h = 3840
+
+    if primary_token == "timelapse":
+        asset_type = "timelapse"
+
+    elif primary_token == "video":
+        sub_type = tokens[1].lower() if len(tokens) > 1 else "realtime"
+        if sub_type.startswith("slowdown"):
+            asset_type = "video_slowdown"
+            # Parse optional duration e.g. video_slowdown_10
+            for tok in tokens[2:]:
+                if tok.replace('.', '', 1).isdigit():
+                    duration = float(tok)
+                    break
+        elif sub_type.startswith("realtime"):
+            asset_type = "video_realtime"
+        else:
+            # Default generic 'video' is realtime
+            asset_type = "video_realtime"
+
+    elif primary_token == "photo":
+        asset_type = "photo"
+        for tok in tokens[1:]:
+            if tok.replace('.', '', 1).isdigit():
+                duration = float(tok)
+                break
+
+    elif primary_token == "composite":
+        asset_type = "composite"
+        # Token format can be: composite_<layout>_<RES>_<duration>
+        # e.g., composite_sinusoid_10, composite_circle_3840x2160_10
+        for tok in tokens[1:]:
+            tok_l = tok.lower()
+            if tok_l in ["sinusoid", "circle", "diagonal", "horizontal", "vertical"]:
+                layout = tok_l
+            elif "x" in tok_l:
+                res_parts = tok_l.split("x")
+                if len(res_parts) == 2 and res_parts[0].isdigit() and res_parts[1].isdigit():
+                    comp_w = int(res_parts[0])
+                    comp_h = int(res_parts[1])
+            elif tok_l.replace('.', '', 1).isdigit():
+                duration = float(tok_l)
+
+    if asset_type is None:
+        return None
+
+    return {
+        'index': idx,
+        'raw_name': basename,
+        'path': filepath,
+        'asset_type': asset_type,
+        'duration': duration,
+        'layout': layout,
+        'comp_width': comp_w,
+        'comp_height': comp_h,
+    }
+
+
+def discover_coc_assets(in_dir="010_in"):
+    """
+    Scans in_dir for files matching CoC rules, sorting strictly by index ascending.
+    """
+    if not os.path.exists(in_dir):
+        return []
+
+    assets = []
+    for fname in os.listdir(in_dir):
+        if fname.startswith('.') or fname.startswith('tmp_') or fname.endswith('.tmp'):
+            continue
+        full_path = os.path.join(in_dir, fname)
+        item = parse_coc_filename(full_path)
+        if item is not None:
+            assets.append(item)
+
+    assets.sort(key=lambda x: x['index'])
+    return assets
+
+
+def detect_project_resolution(assets, fallback=(1280, 720)):
+    """
+    Extracts native resolution from the first video/timelapse or photo asset.
+    """
+    for item in assets:
+        t = item['asset_type']
+        p = item['path']
+        if t in ['timelapse', 'video_slowdown', 'video_realtime']:
+            cap = cv2.VideoCapture(p)
+            if cap.isOpened():
+                w = int(cap.get(cv2.CAP_PROP_FRAME_WIDTH))
+                h = int(cap.get(cv2.CAP_PROP_FRAME_HEIGHT))
+                cap.release()
+                if w > 0 and h > 0:
+                    return w, h
+        elif t == 'photo':
+            img = cv2.imread(p)
+            if img is not None:
+                h, w = img.shape[:2]
+                return w, h
+
+    return fallback
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# GEOMETRY & CIRCLE FITTING CORE
+# ─────────────────────────────────────────────────────────────────────────────
+
+def optimize_circle_center(points, r_fixed, initial_guess=None, num_steps=20):
+    """
+    Gradient descent to minimize sum((||p_i - (cx,cy)|| - r_fixed)^2).
+    Fast subpixel circle fitting for convex solar/lunar limbs.
+    """
+    pts = points.astype(np.float32)
+    if initial_guess is None:
+        cx, cy = np.mean(pts, axis=0)
+    else:
+        cx, cy = float(initial_guess[0]), float(initial_guess[1])
+
+    lr = 0.5
+    for _ in range(num_steps):
+        dx = pts[:, 0] - cx
+        dy = pts[:, 1] - cy
+        dist = np.sqrt(dx * dx + dy * dy)
+        valid = dist > 1e-6
+        if not np.any(valid):
+            break
+        err = dist[valid] - r_fixed
+        grad_x = -np.mean(err * (dx[valid] / dist[valid]))
+        grad_y = -np.mean(err * (dy[valid] / dist[valid]))
+        cx -= lr * grad_x
+        cy -= lr * grad_y
+        lr *= 0.95
+    return cx, cy
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# PIPELINE READERS & HELPERS
+# ─────────────────────────────────────────────────────────────────────────────
+
+def read_video_frames_pipe(in_path):
+    """
+    Reliably extracts all raw BGR frames from any video container via FFmpeg image2pipe.
+    Guarantees 100% reliable frame decoding across macOS OpenCV container quirks.
+    """
+    cmd_probe = [
+        'ffprobe', '-v', 'error',
+        '-select_streams', 'v:0',
+        '-show_entries', 'stream=width,height',
+        '-of', 'csv=s=x:p=0',
+        in_path
+    ]
+    res = subprocess.run(cmd_probe, capture_output=True, text=True)
+    dims = res.stdout.strip().split('x')
+    w, h = int(dims[0]), int(dims[1])
+
+    cmd_stream = [
+        'ffmpeg', '-i', in_path,
+        '-f', 'image2pipe',
+        '-pix_fmt', 'bgr24',
+        '-vcodec', 'rawvideo',
+        '-'
+    ]
+    proc = subprocess.Popen(cmd_stream, stdout=subprocess.PIPE, stderr=subprocess.DEVNULL)
+
+    frame_size = w * h * 3
+    frames = []
+    while True:
+        raw_bytes = proc.stdout.read(frame_size)
+        if len(raw_bytes) < frame_size:
+            break
+        frame = np.frombuffer(raw_bytes, dtype=np.uint8).reshape((h, w, 3))
+        frames.append(frame)
+
+    proc.stdout.close()
+    proc.wait()
+    return frames, w, h
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# TIMELAPSE ASSET ENGINE (1:1 SPEED, LIMB STABILIZATION)
+# ─────────────────────────────────────────────────────────────────────────────
+
+def stabilize_timelapse_asset(
     in_path: str,
     out_path: str,
-    target_seconds: float = 30.0,
-    target_fps: float = 30.0,
-    solar_radius: float = 238.0,
+    master_w: int = 1280,
+    master_h: int = 720,
+    r_fixed: float = None,
+    shift_offset=(12.5, 7.5),
+    fps: float = 30.0,
     crf: int = 16,
     preset: str = "fast"
 ):
     """
-    Filters out black/corrupted intervalometer frames, resamples the pre-totality
-    sequence to target_seconds, stabilizes the solar limb to center (640, 360),
-    equalizes camera white balance drift, and applies temporal luminance smoothing
-    to eliminate exposure dips and flicker.
+    Stabilizes solar limb time-lapse sequence to dynamic center (master_w/2, master_h/2)
+    with subpixel precision and color equalization.
     """
-    print("=" * 60)
-    print(f"Step 2/5: Accelerating & stabilizing pre-totality sequence to {target_seconds:.1f}s...")
-    print("  (Filtering out black/corrupted intervalometer frames)")
-    print("=" * 60)
-
     cap = cv2.VideoCapture(in_path)
-    total_in_frames = int(cap.get(cv2.CAP_PROP_FRAME_COUNT))
-    w = int(cap.get(cv2.CAP_PROP_FRAME_WIDTH))
-    h = int(cap.get(cv2.CAP_PROP_FRAME_HEIGHT))
+    total_frames = int(cap.get(cv2.CAP_PROP_FRAME_COUNT))
+    in_w = int(cap.get(cv2.CAP_PROP_FRAME_WIDTH))
+    in_h = int(cap.get(cv2.CAP_PROP_FRAME_HEIGHT))
+    cap.release()
 
-    # 1. Scan valid frames (discarding black frames)
-    valid_indices = []
-    idx = 0
-    pbar = tqdm(total=total_in_frames, desc="1/3 Scanning valid frames")
-    while True:
+    cx_target = master_w / 2.0
+    cy_target = master_h / 2.0
+    if r_fixed is None:
+        r_fixed = min(master_w, master_h) * 0.331  # ~238.5 for 720p
+
+    # Pass 1: Measure raw centers
+    cap = cv2.VideoCapture(in_path)
+    raw_centers = []
+    pbar = tqdm(total=total_frames, desc=f"Stabilizing {os.path.basename(in_path)}")
+
+    last_valid = (in_w / 2.0, in_h / 2.0)
+    for _ in range(total_frames):
         ret, frame = cap.read()
         if not ret:
             break
-        if np.max(frame) >= 25:
-            valid_indices.append(idx)
-        idx += 1
-        pbar.update(1)
-    cap.release()
-    pbar.close()
-
-    print(f"Valid bright frames detected: {len(valid_indices)} of {total_in_frames} (Discarded {total_in_frames - len(valid_indices)} black frames).")
-
-    target_frames = int(round(target_seconds * target_fps))
-    sample_pos = np.linspace(0, len(valid_indices) - 1, target_frames)
-    sampled_raw_indices = [valid_indices[int(round(p))] for p in sample_pos]
-    sampled_set = set(sampled_raw_indices)
-
-    # 2. Extract selected sampled frames
-    cap = cv2.VideoCapture(in_path)
-    sampled_frames_dict = {}
-    curr = 0
-    pbar = tqdm(total=sampled_raw_indices[-1] + 1, desc="2/3 Sampling clean frames")
-    while curr <= sampled_raw_indices[-1]:
-        if curr in sampled_set:
-            ret, frame = cap.read()
-            if not ret:
-                break
-            sampled_frames_dict[curr] = frame
-        else:
-            ret = cap.grab()
-            if not ret:
-                break
-        curr += 1
-        pbar.update(1)
-    cap.release()
-    pbar.close()
-
-    sampled_frames = [sampled_frames_dict[i] for i in sampled_raw_indices]
-    print(f"Sampled {len(sampled_frames)} clean frames across pre-totality.")
-
-    # 3. Track solar limb center
-    centers = []
-    last_valid_center = (640.0, 360.0)
-
-    for idx, frame in enumerate(tqdm(sampled_frames, desc="3/3 Tracking solar limb")):
         gray = cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY)
         max_val = float(np.max(gray))
         th_val = max(20, min(80, int(0.35 * max_val)))
         _, binary = cv2.threshold(gray, th_val, 255, cv2.THRESH_BINARY)
         contours, _ = cv2.findContours(binary, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_NONE)
 
-        if not contours or idx >= len(sampled_frames) - 10:
-            centers.append(last_valid_center)
+        if not contours:
+            raw_centers.append(last_valid)
+            pbar.update(1)
             continue
 
         cnt = max(contours, key=cv2.contourArea)
@@ -131,62 +316,146 @@ def stabilize_and_accelerate_pre_totality(
         hull = cv2.convexHull(pts).reshape(-1, 2)
 
         if len(hull) < 20:
-            centers.append(last_valid_center)
+            raw_centers.append(last_valid)
+            pbar.update(1)
             continue
 
-        def cost(center):
-            cx, cy = center
-            d = np.sqrt((hull[:, 0] - cx)**2 + (hull[:, 1] - cy)**2)
-            err = np.abs(d - solar_radius)
-            return np.sum(np.where(err < 4.0, 0.5 * err**2, 4.0 * (err - 2.0)))
+        cx_fit, cy_fit = optimize_circle_center(hull, r_fixed)
+        cx_corr = cx_fit - shift_offset[0]
+        cy_corr = cy_fit - shift_offset[1]
+        last_valid = (cx_corr, cy_corr)
+        raw_centers.append(last_valid)
+        pbar.update(1)
 
-        init_cx, init_cy = last_valid_center
-        res = minimize(cost, [init_cx, init_cy], method='Nelder-Mead')
-        if res.success and 550 < res.x[0] < 730 and 270 < res.x[1] < 450:
-            last_valid_center = (res.x[0], res.x[1])
-            centers.append(last_valid_center)
-        else:
-            centers.append(last_valid_center)
+    cap.release()
+    pbar.close()
 
-    # 4. Automatic White Balance & Temporal Luminance Continuity Equalization
-    r_means, g_means, b_means, p90_vals = [], [], [], []
-    for f in sampled_frames:
-        gray = cv2.cvtColor(f, cv2.COLOR_BGR2GRAY)
-        mask = gray > 20
-        if np.sum(mask) > 50:
-            b_means.append(float(np.mean(f[:, :, 0][mask])))
-            g_means.append(float(np.mean(f[:, :, 1][mask])))
-            r_means.append(float(np.mean(f[:, :, 2][mask])))
-            p90_vals.append(float(np.percentile(f[:, :, 2][mask], 90)))
-        else:
-            b_means.append(0.0)
-            g_means.append(0.0)
-            r_means.append(0.0)
-            p90_vals.append(0.0)
+    # Pass 2: Warp and encode
+    ffmpeg_cmd = [
+        'ffmpeg', '-y', '-loglevel', 'error',
+        '-f', 'rawvideo', '-vcodec', 'rawvideo',
+        '-s', f'{master_w}x{master_h}',
+        '-pix_fmt', 'bgr24',
+        '-r', str(fps),
+        '-i', '-',
+        '-c:v', 'libx265',
+        '-crf', str(crf),
+        '-preset', preset,
+        '-tag:v', 'hvc1',
+        '-movflags', '+faststart',
+        '-pix_fmt', 'yuv420p',
+        '-color_range', '1',
+        '-colorspace', 'bt709',
+        '-color_trc', 'bt709',
+        '-color_primaries', 'bt709',
+        out_path
+    ]
+    proc = subprocess.Popen(ffmpeg_cmd, stdin=subprocess.PIPE, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
 
-    r_means = np.array(r_means)
-    g_means = np.array(g_means)
-    b_means = np.array(b_means)
-    p90_vals = np.array(p90_vals)
+    cap = cv2.VideoCapture(in_path)
+    for idx in range(len(raw_centers)):
+        ret, frame = cap.read()
+        if not ret:
+            break
+        cx_c, cy_c = raw_centers[idx]
+        dx = cx_target - cx_c
+        dy = cy_target - cy_c
+        M = np.array([[1.0, 0.0, dx], [0.0, 1.0, dy]], dtype=np.float32)
 
-    gr_ratio = g_means / np.maximum(r_means, 1.0)
-    br_ratio = b_means / np.maximum(r_means, 1.0)
+        # Equalize solar color
+        frame_eq = cec.equalize_solar_color(frame)
+        warped = cv2.warpAffine(frame_eq, M, (master_w, master_h), flags=cv2.INTER_LANCZOS4, borderMode=cv2.BORDER_CONSTANT, borderValue=(0, 0, 0))
+        proc.stdin.write(warped.tobytes())
 
-    # Valid baseline reference frames (outside white balance shift where G/R < 0.75 and B/R < 0.65)
-    valid_color_mask = (gr_ratio < 0.75) & (br_ratio < 0.65) & (r_means > 10)
-    x_valid_color = np.where(valid_color_mask)[0]
+    cap.release()
+    proc.stdin.close()
+    proc.wait()
 
-    if len(x_valid_color) > 10:
-        target_gr = np.interp(np.arange(len(sampled_frames)), x_valid_color, gr_ratio[x_valid_color])
-        target_br = np.interp(np.arange(len(sampled_frames)), x_valid_color, br_ratio[x_valid_color])
-    else:
-        target_gr = gr_ratio
-        target_br = br_ratio
 
-    # Temporal Luminance Smoothing (eliminates sudden exposure dips/jumps)
-    cutoff_fade = int(0.95 * len(sampled_frames))  # preserve natural diamond ring fade at very end
+# ─────────────────────────────────────────────────────────────────────────────
+# VIDEO SLOWDOWN / RESAMPLE ENGINE
+# ─────────────────────────────────────────────────────────────────────────────
+
+def process_video_slowdown_asset(
+    in_path: str,
+    out_path: str,
+    target_duration_s: float = 10.0,
+    master_w: int = 1280,
+    master_h: int = 720,
+    r_fixed: float = None,
+    shift_offset=(12.5, 7.5),
+    fps: float = 30.0,
+    crf: int = 16,
+    preset: str = "fast"
+):
+    """
+    Filters corrupt/black frames, resamples to target_duration_s at fps (30fps),
+    equalizes solar color, smooths exposure steps, and stabilizes solar limb.
+    """
+    cap = cv2.VideoCapture(in_path)
+    total_frames = int(cap.get(cv2.CAP_PROP_FRAME_COUNT))
+    cap.release()
+
+    cx_target = master_w / 2.0
+    cy_target = master_h / 2.0
+    if r_fixed is None:
+        r_fixed = min(master_w, master_h) * 0.331  # ~238.5 for 720p
+
+    # 1. Filter black frames
+    valid_frames = []
+    cap = cv2.VideoCapture(in_path)
+    pbar = tqdm(total=total_frames, desc=f"Scanning valid frames ({os.path.basename(in_path)})")
+    while True:
+        ret, frame = cap.read()
+        if not ret:
+            break
+        pbar.update(1)
+        gray = cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY)
+        if np.max(gray) >= 30:
+            valid_frames.append(frame)
+    cap.release()
+    pbar.close()
+
+    if not valid_frames:
+        raise ValueError(f"No valid bright frames found in {in_path}")
+
+    # 2. Resample to target frame count
+    out_num_frames = int(round(target_duration_s * fps))
+    indices = np.linspace(0, len(valid_frames) - 1, out_num_frames)
+    sampled_frames = [valid_frames[int(round(idx))] for idx in indices]
+
+    # 3. Track solar limb
+    centers = []
+    last_valid = (cx_target, cy_target)
+    for frame in tqdm(sampled_frames, desc="Tracking solar limb"):
+        gray = cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY)
+        max_val = float(np.max(gray))
+        if max_val < 30:
+            centers.append(last_valid)
+            continue
+        th_val = max(20, min(80, int(0.35 * max_val)))
+        _, binary = cv2.threshold(gray, th_val, 255, cv2.THRESH_BINARY)
+        contours, _ = cv2.findContours(binary, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_NONE)
+        if not contours:
+            centers.append(last_valid)
+            continue
+        cnt = max(contours, key=cv2.contourArea)
+        pts = cnt.reshape(-1, 2)
+        hull = cv2.convexHull(pts).reshape(-1, 2)
+        if len(hull) < 20:
+            centers.append(last_valid)
+            continue
+        cx_fit, cy_fit = optimize_circle_center(hull, r_fixed)
+        cx_corr = cx_fit - shift_offset[0]
+        cy_corr = cy_fit - shift_offset[1]
+        last_valid = (cx_corr, cy_corr)
+        centers.append(last_valid)
+
+    # 4. Exposure smoothing
+    p90_vals = np.array([np.percentile(cv2.cvtColor(f, cv2.COLOR_BGR2GRAY), 90) for f in sampled_frames], dtype=np.float32)
+    cutoff_fade = max(0, len(sampled_frames) - int(2.0 * fps))
     robust_p90 = p90_vals.copy()
-    for idx in range(10, cutoff_fade):
+    for idx in range(cutoff_fade):
         local_med = float(np.median(p90_vals[max(0, idx-20) : min(cutoff_fade, idx+21)]))
         if p90_vals[idx] < 0.75 * local_med or p90_vals[idx] > 1.35 * local_med:
             robust_p90[idx] = local_med
@@ -199,14 +468,13 @@ def stabilize_and_accelerate_pre_totality(
         if p90_vals[idx] > 20 and idx < cutoff_fade:
             lum_scales[idx] = smooth_lum_target[idx] / max(p90_vals[idx], 1.0)
 
+    # 5. Warp and encode
     ffmpeg_cmd = [
-        'ffmpeg', '-y',
-        '-loglevel', 'error',
-        '-f', 'rawvideo',
-        '-vcodec', 'rawvideo',
-        '-s', f'{w}x{h}',
+        'ffmpeg', '-y', '-loglevel', 'error',
+        '-f', 'rawvideo', '-vcodec', 'rawvideo',
+        '-s', f'{master_w}x{master_h}',
         '-pix_fmt', 'bgr24',
-        '-r', str(target_fps),
+        '-r', str(fps),
         '-i', '-',
         '-c:v', 'libx265',
         '-crf', str(crf),
@@ -224,103 +492,100 @@ def stabilize_and_accelerate_pre_totality(
 
     for idx, (frame, (cx, cy)) in enumerate(zip(sampled_frames, centers)):
         corr_frame = frame.astype(np.float32)
-
-        # 1. White balance chromaticity correction
-        if not valid_color_mask[idx] and r_means[idx] > 10:
-            curr_g_scale = target_gr[idx] / max(gr_ratio[idx], 1e-4)
-            curr_b_scale = target_br[idx] / max(br_ratio[idx], 1e-4)
-            corr_frame[:, :, 0] *= curr_b_scale
-            corr_frame[:, :, 1] *= curr_g_scale
-
-        # 2. Temporal Luminance Continuity correction
         if lum_scales[idx] != 1.0:
             corr_frame *= lum_scales[idx]
 
         frame_to_warp = np.clip(corr_frame, 0, 255).astype(np.uint8)
+        frame_to_warp = cec.equalize_solar_color(frame_to_warp)
 
-        dx = 640.0 - cx
-        dy = 360.0 - cy
+        dx = cx_target - cx
+        dy = cy_target - cy
         M = np.array([[1.0, 0.0, dx], [0.0, 1.0, dy]], dtype=np.float32)
-        warped = cv2.warpAffine(frame_to_warp, M, (w, h), flags=cv2.INTER_LANCZOS4, borderMode=cv2.BORDER_CONSTANT, borderValue=(0, 0, 0))
+        warped = cv2.warpAffine(frame_to_warp, M, (master_w, master_h), flags=cv2.INTER_LANCZOS4, borderMode=cv2.BORDER_CONSTANT, borderValue=(0, 0, 0))
         proc.stdin.write(warped.tobytes())
 
     proc.stdin.close()
     proc.wait()
-    print(f"Successfully generated: {out_path}")
 
 
-# Backwards compatibility alias
-stabilize_and_accelerate_pretotal = stabilize_and_accelerate_pre_totality
+# ─────────────────────────────────────────────────────────────────────────────
+# VIDEO REALTIME ENGINE (TOTALITY & CORONA TRACKING)
+# ─────────────────────────────────────────────────────────────────────────────
 
-
-def stabilize_totality(
+def process_video_realtime_asset(
     in_path: str,
     out_path: str,
-    lunar_radius: float = 246.0,
+    master_w: int = 1280,
+    master_h: int = 720,
+    lunar_radius: float = None,
     shift_offset=(12.5, 7.5),
     fps: float = 30.0,
     crf: int = 16,
     preset: str = "fast"
 ):
     """
-    Stabilizes totality phase by tracking lunar silhouette edge points,
-    applying the inherited C2 shift offset (+12.5 px, +7.5 px) for seamless continuity.
+    Stabilizes real-time continuous video (totality/corona/chromosphere) at 1x speed.
     """
-    print("\n" + "=" * 60)
-    print(f"Step 3/5: Stabilizing totality (with C2 transition center inheritance: {shift_offset})...")
-    print("=" * 60)
-
     cap = cv2.VideoCapture(in_path)
-    cnt = int(cap.get(cv2.CAP_PROP_FRAME_COUNT))
-    w = int(cap.get(cv2.CAP_PROP_FRAME_WIDTH))
-    h = int(cap.get(cv2.CAP_PROP_FRAME_HEIGHT))
+    total_frames = int(cap.get(cv2.CAP_PROP_FRAME_COUNT))
+    cap.release()
 
-    frames = []
+    cx_target = master_w / 2.0
+    cy_target = master_h / 2.0
+    if lunar_radius is None:
+        lunar_radius = min(master_w, master_h) * 0.3416  # ~246.0 for 720p
+
+    # Pass 1: Track centers
+    cap = cv2.VideoCapture(in_path)
     centers = []
-    last_valid_center = (622.0, 377.0)
+    last_valid = (cx_target, cy_target)
+    pbar = tqdm(total=total_frames, desc=f"Stabilizing Realtime {os.path.basename(in_path)}")
 
-    pbar = tqdm(total=cnt, desc="1/2 Analyzing totality lunar limb")
-    while True:
+    for _ in range(total_frames):
         ret, frame = cap.read()
         if not ret:
             break
-        frames.append(frame)
-
         gray = cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY)
-        blurred = cv2.GaussianBlur(gray, (5, 5), 0)
-        edges = cv2.Canny(blurred, 20, 60)
+        max_val = float(np.max(gray))
 
-        y_indices, x_indices = np.where(edges > 0)
-        dists = np.sqrt((x_indices - last_valid_center[0])**2 + (y_indices - last_valid_center[1])**2)
-        valid_mask = (dists >= 200) & (dists <= 285)
-        edge_pts = np.column_stack([x_indices[valid_mask], y_indices[valid_mask]])
+        if max_val < 30:
+            centers.append(last_valid)
+            pbar.update(1)
+            continue
 
-        if len(edge_pts) < 100:
-            centers.append(last_valid_center)
-        else:
-            def cost(params):
-                cx, cy = params
-                d = np.sqrt((edge_pts[:, 0] - cx)**2 + (edge_pts[:, 1] - cy)**2)
-                err = np.abs(d - lunar_radius)
-                return np.sum(np.where(err < 4.0, 0.5 * err**2, 4.0 * (err - 2.0)))
+        th_val = max(15, min(60, int(0.25 * max_val)))
+        _, binary = cv2.threshold(gray, th_val, 255, cv2.THRESH_BINARY)
+        contours, _ = cv2.findContours(binary, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_NONE)
 
-            res = minimize(cost, [last_valid_center[0], last_valid_center[1]], method='Nelder-Mead')
-            if res.success and 580 < res.x[0] < 700 and 320 < res.x[1] < 420:
-                last_valid_center = (res.x[0], res.x[1])
-                centers.append(last_valid_center)
-            else:
-                centers.append(last_valid_center)
+        if not contours:
+            centers.append(last_valid)
+            pbar.update(1)
+            continue
+
+        cnt = max(contours, key=cv2.contourArea)
+        pts = cnt.reshape(-1, 2)
+        hull = cv2.convexHull(pts).reshape(-1, 2)
+
+        if len(hull) < 20:
+            centers.append(last_valid)
+            pbar.update(1)
+            continue
+
+        cx_fit, cy_fit = optimize_circle_center(hull, lunar_radius)
+        cx_corr = cx_fit - shift_offset[0]
+        cy_corr = cy_fit - shift_offset[1]
+        last_valid = (cx_corr, cy_corr)
+        centers.append(last_valid)
         pbar.update(1)
 
     cap.release()
     pbar.close()
 
+    # Pass 2: Warp and encode
     ffmpeg_cmd = [
-        'ffmpeg', '-y',
-        '-loglevel', 'error',
-        '-f', 'rawvideo',
-        '-vcodec', 'rawvideo',
-        '-s', f'{w}x{h}',
+        'ffmpeg', '-y', '-loglevel', 'error',
+        '-f', 'rawvideo', '-vcodec', 'rawvideo',
+        '-s', f'{master_w}x{master_h}',
         '-pix_fmt', 'bgr24',
         '-r', str(fps),
         '-i', '-',
@@ -338,38 +603,182 @@ def stabilize_totality(
     ]
     proc = subprocess.Popen(ffmpeg_cmd, stdin=subprocess.PIPE, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
 
-    off_x, off_y = shift_offset
-    for frame, (c_x, c_y) in zip(tqdm(frames, desc="2/2 Warping & encoding totality"), centers):
-        dx = 640.0 - c_x + off_x
-        dy = 360.0 - c_y + off_y
+    cap = cv2.VideoCapture(in_path)
+    for idx in range(len(centers)):
+        ret, frame = cap.read()
+        if not ret:
+            break
+        cx_c, cy_c = centers[idx]
+        dx = cx_target - cx_c
+        dy = cy_target - cy_c
         M = np.array([[1.0, 0.0, dx], [0.0, 1.0, dy]], dtype=np.float32)
-        warped = cv2.warpAffine(frame, M, (w, h), flags=cv2.INTER_LANCZOS4, borderMode=cv2.BORDER_CONSTANT, borderValue=(0, 0, 0))
+        warped = cv2.warpAffine(frame, M, (master_w, master_h), flags=cv2.INTER_LANCZOS4, borderMode=cv2.BORDER_CONSTANT, borderValue=(0, 0, 0))
         proc.stdin.write(warped.tobytes())
+
+    cap.release()
+    proc.stdin.close()
+    proc.wait()
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# STILL PHOTO & COMPOSITE ARTWORK ENGINES (NO OPTICAL TRACKING)
+# ─────────────────────────────────────────────────────────────────────────────
+
+def scale_and_pad_to_canvas(image, target_w, target_h):
+    """
+    Scales image preserving aspect ratio and places it on a (target_w, target_h)
+    canvas with clean black letterbox/pillarbox padding. No optical tracking.
+    """
+    ih, iw = image.shape[:2]
+    scale = min(target_w / float(iw), target_h / float(ih))
+    new_w = int(round(iw * scale))
+    new_h = int(round(ih * scale))
+
+    resized = cv2.resize(image, (new_w, new_h), interpolation=cv2.INTER_LANCZOS4)
+    canvas = np.zeros((target_h, target_w, 3), dtype=np.uint8)
+
+    x_offset = (target_w - new_w) // 2
+    y_offset = (target_h - new_h) // 2
+    canvas[y_offset:y_offset+new_h, x_offset:x_offset+new_w] = resized
+    return canvas
+
+
+def process_photo_asset(
+    in_path: str,
+    out_path: str,
+    duration_s: float = 10.0,
+    master_w: int = 1280,
+    master_h: int = 720,
+    fps: float = 30.0,
+    crf: int = 16,
+    preset: str = "fast"
+):
+    """
+    Creates a static video clip of a photo padded with black borders to project resolution.
+    No optical tracking applied.
+    """
+    img = cv2.imread(in_path)
+    if img is None:
+        raise FileNotFoundError(f"Could not read photo asset at {in_path}")
+
+    padded_frame = scale_and_pad_to_canvas(img, master_w, master_h)
+    total_frames = int(round(duration_s * fps))
+
+    ffmpeg_cmd = [
+        'ffmpeg', '-y', '-loglevel', 'error',
+        '-f', 'rawvideo', '-vcodec', 'rawvideo',
+        '-s', f'{master_w}x{master_h}',
+        '-pix_fmt', 'bgr24',
+        '-r', str(fps),
+        '-i', '-',
+        '-c:v', 'libx265',
+        '-crf', str(crf),
+        '-preset', preset,
+        '-tag:v', 'hvc1',
+        '-movflags', '+faststart',
+        '-pix_fmt', 'yuv420p',
+        '-color_range', '1',
+        '-colorspace', 'bt709',
+        '-color_trc', 'bt709',
+        '-color_primaries', 'bt709',
+        out_path
+    ]
+    proc = subprocess.Popen(ffmpeg_cmd, stdin=subprocess.PIPE, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+    frame_bytes = padded_frame.tobytes()
+
+    for _ in range(total_frames):
+        proc.stdin.write(frame_bytes)
 
     proc.stdin.close()
     proc.wait()
-    print(f"Successfully generated: {out_path}")
 
 
-def read_all_frames(video_path: str):
-    """Reads all frames from a video file into memory."""
-    cap = cv2.VideoCapture(video_path)
-    frames = []
-    while True:
-        ret, f = cap.read()
-        if not ret:
-            break
-        frames.append(f)
-    cap.release()
-    return frames
+def process_composite_asset(
+    asset_meta: dict,
+    out_path: str,
+    out_dir: str = "040_out",
+    master_w: int = 1280,
+    master_h: int = 720,
+    fps: float = 30.0,
+    crf: int = 16,
+    preset: str = "fast"
+):
+    """
+    Generates high-resolution composite artwork on-the-fly via create_eclipse_composite,
+    scales and pads it to master project canvas, and produces a video clip of duration_s.
+    """
+    layout = asset_meta.get('layout', 'sinusoid')
+    comp_w = asset_meta.get('comp_width', 3840)
+    comp_h = asset_meta.get('comp_height', 3840)
+    duration_s = asset_meta.get('duration', 10.0)
+    idx = asset_meta.get('index', 6)
 
+    # 1. Sample keyframes from sequence
+    sampled_keyframes = cec.sample_eclipse_sequence()
+    if not sampled_keyframes:
+        raise RuntimeError("Failed to sample keyframes for composite generation.")
+
+    # 2. Render composite artwork image
+    composite_img = cec.render_eclipse_composite(
+        sampled_keyframes=sampled_keyframes,
+        layout_mode=layout,
+        out_w=comp_w,
+        out_h=comp_h
+    )
+
+    # 3. Save high-res composite image artifacts
+    png_path = os.path.join(out_dir, f"composite_artwork_{idx}_{layout}.png")
+    jpg_path = os.path.join(out_dir, f"composite_artwork_{idx}_{layout}.jpg")
+    cv2.imwrite(png_path, composite_img, [cv2.IMWRITE_PNG_COMPRESSION, 3])
+    cv2.imwrite(jpg_path, composite_img, [cv2.IMWRITE_JPEG_QUALITY, 98])
+    print(f"=================================================================")
+    print(f"SUCCESS: Composite generated!")
+    print(f"  PNG (Lossless) : {png_path} ({os.path.getsize(png_path)/(1024*1024):.2f} MB)")
+    print(f"  JPG (High-Q)   : {jpg_path} ({os.path.getsize(jpg_path)/(1024*1024):.2f} MB)")
+    print(f"=================================================================")
+
+    # 4. Scale and pad to master project resolution
+    canvas_frame = scale_and_pad_to_canvas(composite_img, master_w, master_h)
+    total_frames = int(round(duration_s * fps))
+
+    ffmpeg_cmd = [
+        'ffmpeg', '-y', '-loglevel', 'error',
+        '-f', 'rawvideo', '-vcodec', 'rawvideo',
+        '-s', f'{master_w}x{master_h}',
+        '-pix_fmt', 'bgr24',
+        '-r', str(fps),
+        '-i', '-',
+        '-c:v', 'libx265',
+        '-crf', str(crf),
+        '-preset', preset,
+        '-tag:v', 'hvc1',
+        '-movflags', '+faststart',
+        '-pix_fmt', 'yuv420p',
+        '-color_range', '1',
+        '-colorspace', 'bt709',
+        '-color_trc', 'bt709',
+        '-color_primaries', 'bt709',
+        out_path
+    ]
+    proc = subprocess.Popen(ffmpeg_cmd, stdin=subprocess.PIPE, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+    frame_bytes = canvas_frame.tobytes()
+
+    for _ in range(total_frames):
+        proc.stdin.write(frame_bytes)
+
+    proc.stdin.close()
+    proc.wait()
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# MASTER FILM MULTI-ASSET ASSEMBLY ENGINE
+# ─────────────────────────────────────────────────────────────────────────────
 
 def assemble_master_film(
-    v1_path: str,
-    v2_path: str,
-    v3_path: str,
-    v4_path: str,
-    out_path: str,
+    clip_paths: list,
+    output_path: str,
+    master_w: int = 1280,
+    master_h: int = 720,
     transition_type: str = "fade_to_black",
     freeze_before: float = 1.0,
     fade_out: float = 0.5,
@@ -382,106 +791,100 @@ def assemble_master_film(
     preset: str = "fast"
 ):
     """
-    Assembles the 4 stabilized eclipse sequences into the master film
-    with customizable transitions between pre-totality, totality, and partial egress.
+    Dynamically stitches N clips in sequential order with uniform transitions:
+      - 'fade_to_black': freeze_before -> fade_out -> black_duration -> fade_in -> freeze_after
+      - 'crossfade': linear dissolve between clips over fade_duration
+      - 'hard': immediate cut between clips
     """
-    n_freeze_a = int(round(freeze_before * fps))
-    n_freeze_b = int(round(freeze_after * fps))
+    print("=================================================================")
+    print(f"ASSEMBLING MASTER FILM: {output_path}")
+    print(f"  Resolution : {master_w}x{master_h} @ {fps:.2f} fps")
+    print(f"  Clips count: {len(clip_paths)}")
+    print(f"  Transition : '{transition_type}'")
+    print("=================================================================")
 
-    if transition_type in ["fade_to_black", "dip_to_black", "black"]:
-        n_fade_out = int(round(fade_out * fps))
-        n_black = int(round(black_duration * fps))
-        n_fade_in = int(round(fade_in * fps))
-        total_trans = n_freeze_a + n_fade_out + n_black + n_fade_in + n_freeze_b
-        trans_desc = (
-            f"Fade to Black: {freeze_before:.2f}s freeze A + {fade_out:.2f}s fade out "
-            f"+ {black_duration:.2f}s black + {fade_in:.2f}s fade in + {freeze_after:.2f}s freeze B"
-        )
-    elif transition_type == "crossfade":
-        n_fade = int(round(fade_duration * fps))
-        total_trans = n_freeze_a + n_fade + n_freeze_b
-        trans_desc = f"Crossfade: {freeze_before:.2f}s freeze A + {fade_duration:.2f}s dissolve + {freeze_after:.2f}s freeze B"
-    else:  # hard
-        total_trans = n_freeze_a + n_freeze_b
-        trans_desc = f"Hard Cut: {freeze_before:.2f}s freeze A + instant cut + {freeze_after:.2f}s freeze B"
+    if len(clip_paths) == 0:
+        raise ValueError("No clips to assemble.")
 
-    print("\n" + "=" * 60)
-    print(f"Step 5/5: Assembling master film ({total_trans/fps:.2f}s per transition)...")
-    print(f"  Type: {trans_desc} ({total_trans} frames)")
-    print("=" * 60)
+    if len(clip_paths) == 1:
+        # Single clip mode: copy/re-encode directly without transitions
+        single_clip = clip_paths[0]
+        if os.path.abspath(single_clip) != os.path.abspath(output_path):
+            subprocess.run(['cp', single_clip, output_path], check=True)
+        print(f"Single-clip master film exported directly: {output_path}")
+        return
 
-    v1_frames = read_all_frames(v1_path)
-    v2_frames = read_all_frames(v2_path)
-    v3_frames = read_all_frames(v3_path)
-    v4_frames = read_all_frames(v4_path)
+    # Load all clips into memory using robust rawvideo pipe
+    all_clips_frames = []
+    for idx, cpath in enumerate(clip_paths):
+        print(f"  • Reading clip {idx+1}/{len(clip_paths)}: {os.path.basename(cpath)}")
+        frames, w, h = read_video_frames_pipe(cpath)
+        all_clips_frames.append(frames)
 
-    def make_transition(last_frame_a, first_frame_b):
-        trans = []
-        # 1. Freeze on last frame of clip A
-        for _ in range(n_freeze_a):
-            trans.append(last_frame_a.copy())
+    # Build master frame sequence
+    master_frames = []
+    n_freeze_b = int(round(freeze_before * fps))
+    n_fade_o = int(round(fade_out * fps))
+    n_black = int(round(black_duration * fps))
+    n_fade_i = int(round(fade_in * fps))
+    n_freeze_a = int(round(freeze_after * fps))
+    n_crossfade = int(round(fade_duration * fps))
 
-        # 2. Intermediate transition
-        if transition_type in ["fade_to_black", "dip_to_black", "black"]:
-            black_frame = np.zeros_like(last_frame_a)
-            # Fade out to black
-            for i in range(n_fade_out):
-                alpha = (i + 1) / (n_fade_out + 1)
-                blended = cv2.addWeighted(last_frame_a, 1.0 - alpha, black_frame, alpha, 0.0)
-                trans.append(blended)
-            # Pure black pause
-            for _ in range(n_black):
-                trans.append(black_frame.copy())
-            # Fade in from black
-            for i in range(n_fade_in):
-                alpha = (i + 1) / (n_fade_in + 1)
-                blended = cv2.addWeighted(black_frame, 1.0 - alpha, first_frame_b, alpha, 0.0)
-                trans.append(blended)
-        elif transition_type == "crossfade":
-            for i in range(n_fade):
-                alpha = (i + 1) / (n_fade + 1)
-                blended = cv2.addWeighted(last_frame_a, 1.0 - alpha, first_frame_b, alpha, 0.0)
-                trans.append(blended)
-        elif transition_type == "hard":
-            pass
+    for idx, clip in enumerate(all_clips_frames):
+        # Append main clip body
+        master_frames.extend(clip)
 
-        # 3. Freeze on first frame of clip B
-        for _ in range(n_freeze_b):
-            trans.append(first_frame_b.copy())
+        # Apply transition if not the last clip
+        if idx < len(all_clips_frames) - 1:
+            last_frame = clip[-1]
+            next_first = all_clips_frames[idx + 1][0]
 
-        return trans
+            if transition_type == "fade_to_black":
+                # 1. Freeze on last frame
+                for _ in range(n_freeze_b):
+                    master_frames.append(last_frame)
 
-    master = []
-    master.extend(v1_frames)
-    master.extend(v2_frames)
+                # 2. Fade out to black
+                for i in range(1, n_fade_o + 1):
+                    alpha = 1.0 - (i / float(n_fade_o))
+                    faded = np.clip(last_frame.astype(np.float32) * alpha, 0, 255).astype(np.uint8)
+                    master_frames.append(faded)
 
-    # Transition 1: pre-totality -> totality
-    print(f"Generating Transition 1 (pre-totality -> totality, {total_trans} frames)...")
-    trans1 = make_transition(v2_frames[-1], v3_frames[0])
-    master.extend(trans1)
+                # 3. Pure black pause
+                if n_black > 0:
+                    black_frame = np.zeros((master_h, master_w, 3), dtype=np.uint8)
+                    for _ in range(n_black):
+                        master_frames.append(black_frame)
 
-    # Totality
-    master.extend(v3_frames)
+                # 4. Fade in from black to next clip's first frame
+                for i in range(1, n_fade_i + 1):
+                    alpha = i / float(n_fade_i)
+                    faded = np.clip(next_first.astype(np.float32) * alpha, 0, 255).astype(np.uint8)
+                    master_frames.append(faded)
 
-    # Transition 2: totality -> partial egress
-    print(f"Generating Transition 2 (totality -> partial egress, {total_trans} frames)...")
-    trans2 = make_transition(v3_frames[-1], v4_frames[0])
-    master.extend(trans2)
+                # 5. Freeze on next clip's first frame
+                for _ in range(n_freeze_a):
+                    master_frames.append(next_first)
 
-    # Partial egress
-    master.extend(v4_frames)
+            elif transition_type == "crossfade":
+                # Crossfade dissolve
+                for i in range(1, n_crossfade + 1):
+                    alpha = i / float(n_crossfade)
+                    blended = cv2.addWeighted(last_frame, 1.0 - alpha, next_first, alpha, 0.0)
+                    master_frames.append(blended)
 
-    total_frames = len(master)
-    total_dur = total_frames / fps
-    print(f"\nFinal master sequence: {total_frames} frames ({total_dur:.2f}s = {int(total_dur//60)}m {int(total_dur%60)}s)")
+            elif transition_type == "hard":
+                pass  # Direct cut
 
-    os.makedirs(os.path.dirname(os.path.abspath(out_path)), exist_ok=True)
+    # Encode master video
+    total_master_frames = len(master_frames)
+    duration_total_s = total_master_frames / fps
+    print(f"\nEncoding Final Master Film ({total_master_frames} frames, {duration_total_s:.2f}s)...")
+
     ffmpeg_cmd = [
-        'ffmpeg', '-y',
-        '-loglevel', 'error',
-        '-f', 'rawvideo',
-        '-vcodec', 'rawvideo',
-        '-s', '1280x720',
+        'ffmpeg', '-y', '-loglevel', 'error',
+        '-f', 'rawvideo', '-vcodec', 'rawvideo',
+        '-s', f'{master_w}x{master_h}',
         '-pix_fmt', 'bgr24',
         '-r', str(fps),
         '-i', '-',
@@ -495,54 +898,33 @@ def assemble_master_film(
         '-colorspace', 'bt709',
         '-color_trc', 'bt709',
         '-color_primaries', 'bt709',
-        out_path
+        output_path
     ]
     proc = subprocess.Popen(ffmpeg_cmd, stdin=subprocess.PIPE, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
-    for frame in tqdm(master, desc="Encoding final master film"):
+
+    for frame in tqdm(master_frames, desc="Writing Master Film"):
         proc.stdin.write(frame.tobytes())
+
     proc.stdin.close()
     proc.wait()
 
-    if not os.path.exists(out_path):
-        print(f"Error: Output file {out_path} not found.", file=sys.stderr)
-        return
-
-    size_mb = os.path.getsize(out_path) / (1024 * 1024)
-    print("\n" + "=" * 60)
-    print(f"SUCCESS: Master film generated at: {out_path}")
-    print(f"  Resolution: 1280x720")
-    print(f"  FPS: {fps:.2f}")
-    print(f"  Total frames: {total_frames}")
-    print(f"  Duration: {total_dur:.2f}s ({int(total_dur//60)}m {int(total_dur%60)}s)")
-    print(f"  File size: {size_mb:.2f} MB")
-    print("=" * 60)
+    sz_mb = os.path.getsize(output_path) / (1024 * 1024)
+    print("=================================================================")
+    print(f"SUCCESS: Master film generated at: {output_path}")
+    print(f"  Resolution: {master_w}x{master_h} @ {fps:.2f} fps")
+    print(f"  Total frames: {total_master_frames} ({duration_total_s:.2f}s)")
+    print(f"  File size: {sz_mb:.2f} MB")
+    print("=================================================================")
 
 
-def is_valid_video(path: str) -> bool:
-    """Checks if a video exists, has valid dimensions, and contains playable frames."""
-    if not os.path.exists(path):
-        return False
-    try:
-        cap = cv2.VideoCapture(path)
-        cnt = int(cap.get(cv2.CAP_PROP_FRAME_COUNT))
-        w = int(cap.get(cv2.CAP_PROP_FRAME_WIDTH))
-        cap.release()
-        return cnt > 10 and w > 0
-    except Exception:
-        return False
+# ─────────────────────────────────────────────────────────────────────────────
+# MAIN PIPELINE DISPATCHER
+# ─────────────────────────────────────────────────────────────────────────────
 
-
-def resolve_input_file(in_dir: str, primary_name: str, alt_names: list[str]) -> str:
-    """Finds the input file using primary name or alternative aliases."""
-    for name in [primary_name] + alt_names:
-        p = os.path.join(in_dir, name)
-        if os.path.exists(p):
-            return p
-    return os.path.join(in_dir, primary_name)
-
-
-def build_pipeline(
-    pretotal_duration: float = 10.0,
+def run_coc_pipeline(
+    in_dir: str = "010_in",
+    out_dir: str = "040_out",
+    output_film: str = "040_out/full_eclipse.mp4",
     transition_type: str = "fade_to_black",
     freeze_before: float = 1.0,
     fade_out: float = 0.5,
@@ -550,69 +932,109 @@ def build_pipeline(
     fade_in: float = 0.5,
     fade_duration: float = 1.0,
     freeze_after: float = 1.0,
-    output_path: str = "040_out/full_eclipse.mp4",
     force_all: bool = False
 ):
-    in_dir = "010_in"
-    out_dir = "040_out"
+    """
+    Executes the end-to-end CoC Pipeline.
+    """
     os.makedirs(out_dir, exist_ok=True)
 
-    partial_ingress_src = resolve_input_file(in_dir, "partial_ingress.mp4", ["partial_in.mp4"])
-    pre_totality_src = resolve_input_file(in_dir, "pre_totality.mp4", ["pretotal.mp4"])
-    totality_src = resolve_input_file(in_dir, "totality.mp4", ["total.mp4"])
-    partial_egress_src = resolve_input_file(in_dir, "partial_egress.mp4", ["partial_out.mp4"])
+    # 1. Discover CoC assets
+    assets = discover_coc_assets(in_dir)
+    if not assets:
+        print(f"ERROR: No valid CoC assets found in '{in_dir}'.")
+        print("Expected formats e.g.: 01_timelapse.mp4, 02_video_slowdown_10.mp4, 03_video_realtime.mp4, 05_photo_6.jpg, 06_composite_sinusoid_10")
+        sys.exit(1)
 
-    partial_ingress_out = os.path.join(out_dir, "partial_ingress.mp4")
-    pre_totality_out = os.path.join(out_dir, "pre_totality.mp4")
-    totality_out = os.path.join(out_dir, "totality.mp4")
-    partial_egress_out = os.path.join(out_dir, "partial_egress.mp4")
-    final_film = output_path
+    # 2. Auto-detect project master resolution
+    master_w, master_h = detect_project_resolution(assets, fallback=(1280, 720))
+    cx_opt = master_w / 2.0
+    cy_opt = master_h / 2.0
 
-    # Check existing pre_totality duration to auto-regenerate if duration changed
-    pretotal_needs_rebuild = force_all or not is_valid_video(pre_totality_out)
-    if not pretotal_needs_rebuild and os.path.exists(pre_totality_out):
-        cap_chk = cv2.VideoCapture(pre_totality_out)
-        curr_frames = int(cap_chk.get(cv2.CAP_PROP_FRAME_COUNT))
-        curr_fps = cap_chk.get(cv2.CAP_PROP_FPS) or 30.0
-        cap_chk.release()
-        expected_frames = int(round(pretotal_duration * curr_fps))
-        if abs(curr_frames - expected_frames) > 5:
-            pretotal_needs_rebuild = True
+    print("=================================================================")
+    print("SOLAR ECLIPSE PIPELINE (Convention-Over-Configuration)")
+    print("=================================================================")
+    print(f"  Input Directory    : {in_dir}")
+    print(f"  Master Resolution  : {master_w}x{master_h} px (Auto-detected)")
+    print(f"  Optical Center     : ({cx_opt:.1f}, {cy_opt:.1f})")
+    print(f"  Discovered Assets  : {len(assets)} items")
+    for a in assets:
+        print(f"    [{a['index']:02d}] {a['raw_name']:30s} -> Type: {a['asset_type']} (Duration: {a['duration']}s)")
+    print("=================================================================\n")
 
-    # Step 1: Partial Ingress
-    if os.path.exists(partial_ingress_src) and (force_all or not is_valid_video(partial_ingress_out)):
-        print("=" * 60)
-        print(f"Step 1/5: Stabilizing and centering partial ingress ({os.path.basename(partial_ingress_src)})...")
-        print("=" * 60)
-        stabilize_video(partial_ingress_src, partial_ingress_out, r_fixed=238.5, crf=16, preset="fast")
-    else:
-        print(f"Step 1/5: Using cached partial ingress video at {partial_ingress_out}")
+    # 3. Process each asset individually
+    processed_clip_paths = []
 
-    # Step 2: Pre-totality
-    if os.path.exists(pre_totality_src) and pretotal_needs_rebuild:
-        stabilize_and_accelerate_pre_totality(pre_totality_src, pre_totality_out, target_seconds=pretotal_duration, target_fps=30.0, solar_radius=238.0)
-    else:
-        print(f"Step 2/5: Using cached pre-totality video at {pre_totality_out}")
+    for a in assets:
+        idx = a['index']
+        a_type = a['asset_type']
+        in_path = a['path']
+        raw_name = a['raw_name']
+        name_no_ext, _ = os.path.splitext(raw_name)
+        out_clip_path = os.path.join(out_dir, f"{name_no_ext}.mp4")
 
-    # Step 3: Totality (inherits C2 transition alignment)
-    if os.path.exists(totality_src) and (force_all or not is_valid_video(totality_out)):
-        stabilize_totality(totality_src, totality_out, lunar_radius=246.0, shift_offset=(12.5, 7.5), fps=30.0)
-    else:
-        print(f"Step 3/5: Using cached totality video at {totality_out}")
+        print(f"Processing Asset [{idx:02d}]: {raw_name} ({a_type.upper()})...")
 
-    # Step 4: Partial Egress (inherits C3 transition alignment)
-    if os.path.exists(partial_egress_src) and (force_all or not is_valid_video(partial_egress_out)):
-        print("\n" + "=" * 60)
-        print(f"Step 4/5: Stabilizing and centering partial egress ({os.path.basename(partial_egress_src)})...")
-        print("=" * 60)
-        stabilize_video(partial_egress_src, partial_egress_out, shift_offset=(35.0, 24.0), r_fixed=237.5, crf=16, preset="fast")
-    else:
-        print(f"Step 4/5: Using cached partial egress video at {partial_egress_out}")
+        if os.path.exists(out_clip_path) and not force_all:
+            print(f"  • Asset output exists ({out_clip_path}), skipping (use --force-all to rebuild).")
+            processed_clip_paths.append(out_clip_path)
+            continue
 
-    # Step 5: Master Film Assembly
+        if a_type == "timelapse":
+            stabilize_timelapse_asset(
+                in_path=in_path,
+                out_path=out_clip_path,
+                master_w=master_w,
+                master_h=master_h,
+                fps=30.0, crf=16, preset="fast"
+            )
+        elif a_type == "video_slowdown":
+            process_video_slowdown_asset(
+                in_path=in_path,
+                out_path=out_clip_path,
+                target_duration_s=a['duration'],
+                master_w=master_w,
+                master_h=master_h,
+                fps=30.0, crf=16, preset="fast"
+            )
+        elif a_type == "video_realtime":
+            process_video_realtime_asset(
+                in_path=in_path,
+                out_path=out_clip_path,
+                master_w=master_w,
+                master_h=master_h,
+                fps=30.0, crf=16, preset="fast"
+            )
+        elif a_type == "photo":
+            print(f"Generating Still Photo Video: {raw_name} -> {out_clip_path} ({a['duration']}s)")
+            process_photo_asset(
+                in_path=in_path,
+                out_path=out_clip_path,
+                duration_s=a['duration'],
+                master_w=master_w,
+                master_h=master_h,
+                fps=30.0, crf=16, preset="fast"
+            )
+        elif a_type == "composite":
+            print(f"Generating On-The-Fly Composite Artwork: Layout={a['layout'].upper()} ({a['comp_width']}x{a['comp_height']}) -> {out_clip_path} ({a['duration']}s)")
+            process_composite_asset(
+                asset_meta=a,
+                out_path=out_clip_path,
+                out_dir=out_dir,
+                master_w=master_w,
+                master_h=master_h,
+                fps=30.0, crf=16, preset="fast"
+            )
+
+        processed_clip_paths.append(out_clip_path)
+        print()
+
+    # 4. Assemble master film
     assemble_master_film(
-        partial_ingress_out, pre_totality_out, totality_out, partial_egress_out,
-        final_film,
+        clip_paths=processed_clip_paths,
+        output_path=output_film,
+        master_w=master_w,
+        master_h=master_h,
         transition_type=transition_type,
         freeze_before=freeze_before,
         fade_out=fade_out,
@@ -624,32 +1046,40 @@ def build_pipeline(
     )
 
 
+# ─────────────────────────────────────────────────────────────────────────────
+# CLI INTERFACE
+# ─────────────────────────────────────────────────────────────────────────────
+
 if __name__ == "__main__":
-    parser = argparse.ArgumentParser(description="Automated Solar Eclipse 2026 Processing & Assembly Pipeline")
-    parser.add_argument("--pretotal-duration", "-p", type=float, default=10.0,
-                        help="Target duration in seconds for pre-totality sequence (default: 10.0s)")
+    parser = argparse.ArgumentParser(description="CoC Automated Solar Eclipse Processing & Master Film Assembly Pipeline")
+    parser.add_argument("--in-dir", "-i", type=str, default="010_in",
+                        help="Input directory with CoC named assets (default: 010_in)")
+    parser.add_argument("--out-dir", type=str, default="040_out",
+                        help="Intermediate and master output directory (default: 040_out)")
+    parser.add_argument("--output", "-o", type=str, default="040_out/full_eclipse.mp4",
+                        help="Path to final master film (default: 040_out/full_eclipse.mp4)")
     parser.add_argument("--transition-type", type=str, choices=["fade_to_black", "hard", "crossfade"], default="fade_to_black",
-                        help="Transition style: 'fade_to_black' (freeze A + dip to black + freeze B), 'hard' (instant cut with freezes), or 'crossfade' (dissolve with freezes). Default: fade_to_black")
+                        help="Transition style: 'fade_to_black', 'hard', or 'crossfade'. Default: fade_to_black")
     parser.add_argument("--freeze-before", type=float, default=1.0,
-                        help="Duration in seconds of the freeze on the last frame of the preceding clip (default: 1.0s)")
+                        help="Duration in seconds of freeze on the last frame of preceding clip (default: 1.0s)")
     parser.add_argument("--fade-out", type=float, default=0.5,
-                        help="Duration in seconds of the fade out to black (default: 0.5s)")
+                        help="Duration in seconds of fade out to black (default: 0.5s)")
     parser.add_argument("--black-duration", type=float, default=0.0,
                         help="Duration in seconds of pure black pause (default: 0.0s)")
     parser.add_argument("--fade-in", type=float, default=0.5,
-                        help="Duration in seconds of the fade in from black (default: 0.5s)")
+                        help="Duration in seconds of fade in from black (default: 0.5s)")
     parser.add_argument("--fade-duration", type=float, default=1.0,
-                        help="Duration in seconds of crossfade dissolve if transition-type is crossfade (default: 1.0s)")
+                        help="Duration in seconds of crossfade dissolve (default: 1.0s)")
     parser.add_argument("--freeze-after", type=float, default=1.0,
-                        help="Duration in seconds of the freeze on the first frame of the subsequent clip (default: 1.0s)")
-    parser.add_argument("--output", "-o", type=str, default="040_out/full_eclipse.mp4",
-                        help="Path to final master film (default: 040_out/full_eclipse.mp4)")
+                        help="Duration in seconds of freeze on the first frame of subsequent clip (default: 1.0s)")
     parser.add_argument("--force-all", action="store_true",
-                        help="Force re-processing and re-stabilizing all phases from scratch")
+                        help="Force re-processing and re-stabilizing all assets from scratch")
     args = parser.parse_args()
 
-    build_pipeline(
-        pretotal_duration=args.pretotal_duration,
+    run_coc_pipeline(
+        in_dir=args.in_dir,
+        out_dir=args.out_dir,
+        output_film=args.output,
         transition_type=args.transition_type,
         freeze_before=args.freeze_before,
         fade_out=args.fade_out,
@@ -657,6 +1087,5 @@ if __name__ == "__main__":
         fade_in=args.fade_in,
         fade_duration=args.fade_duration,
         freeze_after=args.freeze_after,
-        output_path=args.output,
         force_all=args.force_all
     )
