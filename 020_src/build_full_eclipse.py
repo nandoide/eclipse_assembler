@@ -212,6 +212,41 @@ def read_video_frames_pipe(in_path):
     return frames, w, h
 
 
+def stream_video_frames_pipe(in_path):
+    """
+    Memory-efficient generator that yields raw BGR frames sequentially from any video container.
+    """
+    cmd_probe = [
+        'ffprobe', '-v', 'error',
+        '-select_streams', 'v:0',
+        '-show_entries', 'stream=width,height',
+        '-of', 'csv=s=x:p=0',
+        in_path
+    ]
+    res = subprocess.run(cmd_probe, capture_output=True, text=True)
+    dims = res.stdout.strip().split('x')
+    w, h = int(dims[0]), int(dims[1])
+
+    cmd_stream = [
+        'ffmpeg', '-i', in_path,
+        '-f', 'image2pipe',
+        '-pix_fmt', 'bgr24',
+        '-vcodec', 'rawvideo',
+        '-'
+    ]
+    proc = subprocess.Popen(cmd_stream, stdout=subprocess.PIPE, stderr=subprocess.DEVNULL)
+
+    frame_size = w * h * 3
+    while True:
+        raw_bytes = proc.stdout.read(frame_size)
+        if len(raw_bytes) < frame_size:
+            break
+        yield np.frombuffer(raw_bytes, dtype=np.uint8).reshape((h, w, 3)), w, h
+
+    proc.stdout.close()
+    proc.wait()
+
+
 # ─────────────────────────────────────────────────────────────────────────────
 # HIGH-PRECISION SOLAR LIMB STABILIZATION (TIMELAPSE)
 # ─────────────────────────────────────────────────────────────────────────────
@@ -792,7 +827,7 @@ def assemble_master_film(
       - 'fade_to_black': freeze_before -> fade_out -> black_duration -> fade_in -> freeze_after
       - 'crossfade': linear dissolve between clips over fade_duration
       - 'hard': immediate cut between clips
-    Uses streaming I/O with near zero RAM footprint.
+    Uses pure FFmpeg image2pipe streaming with zero RAM footprint and no OpenCV HEVC decoding issues.
     """
     print("=================================================================")
     print(f"ASSEMBLING MASTER FILM: {output_path}")
@@ -811,30 +846,6 @@ def assemble_master_film(
         print(f"Single-clip master film exported directly: {output_path}")
         return
 
-    # Extract first and last frames of each clip for transition generation
-    clip_first_frames = []
-    clip_last_frames = []
-    clip_frame_counts = []
-
-    for cpath in clip_paths:
-        cap = cv2.VideoCapture(cpath)
-        cnt = int(cap.get(cv2.CAP_PROP_FRAME_COUNT))
-        clip_frame_counts.append(cnt)
-        ret, f0 = cap.read()
-        if not ret:
-            f0 = np.zeros((master_h, master_w, 3), dtype=np.uint8)
-        clip_first_frames.append(f0)
-
-        if cnt > 1:
-            cap.set(cv2.CAP_PROP_POS_FRAMES, cnt - 1)
-            ret, f_last = cap.read()
-            if not ret:
-                f_last = f0
-        else:
-            f_last = f0
-        clip_last_frames.append(f_last)
-        cap.release()
-
     # Calculate transition frames
     n_freeze_b = int(round(freeze_before * fps))
     n_fade_o = int(round(fade_out * fps))
@@ -842,6 +853,10 @@ def assemble_master_film(
     n_fade_i = int(round(fade_in * fps))
     n_freeze_a = int(round(freeze_after * fps))
     n_crossfade = int(round(fade_duration * fps))
+
+    # Temporary intermediate raw container
+    out_dir = os.path.dirname(os.path.abspath(output_path))
+    temp_raw = os.path.join(out_dir, "temp_master_raw.mp4")
 
     # Initialize FFmpeg encoder pipe
     ffmpeg_cmd = [
@@ -855,85 +870,84 @@ def assemble_master_film(
         '-crf', str(crf),
         '-preset', preset,
         '-tag:v', 'hvc1',
-        '-movflags', '+faststart',
         '-pix_fmt', 'yuv420p',
         '-color_range', '1',
         '-colorspace', 'bt709',
         '-color_trc', 'bt709',
         '-color_primaries', 'bt709',
-        output_path
+        temp_raw
     ]
-    proc = subprocess.Popen(ffmpeg_cmd, stdin=subprocess.PIPE, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+    proc_out = subprocess.Popen(ffmpeg_cmd, stdin=subprocess.PIPE, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
 
     total_frames_written = 0
+    prev_last_frame = None
 
     for idx, cpath in enumerate(clip_paths):
-        cap = cv2.VideoCapture(cpath)
-        cnt = clip_frame_counts[idx]
-        pbar = tqdm(total=cnt, desc=f"  Streaming [{idx+1}/{len(clip_paths)}]: {os.path.basename(cpath)}")
+        print(f"  • Streaming [{idx+1}/{len(clip_paths)}]: {os.path.basename(cpath)}")
+        clip_frames_written = 0
+        first_frame_of_clip = None
+        last_frame_of_clip = None
 
-        while True:
-            ret, frame = cap.read()
-            if not ret:
-                break
-            if frame.shape[1] != master_w or frame.shape[0] != master_h:
+        for frame, w, h in stream_video_frames_pipe(cpath):
+            if w != master_w or h != master_h:
                 frame = cv2.resize(frame, (master_w, master_h), interpolation=cv2.INTER_LANCZOS4)
-            proc.stdin.write(frame.tobytes())
+
+            # When starting a new clip (and we had a previous clip), write the transition frames first
+            if first_frame_of_clip is None:
+                first_frame_of_clip = frame.copy()
+                if prev_last_frame is not None:
+                    if transition_type == "fade_to_black":
+                        for _ in range(n_freeze_b):
+                            proc_out.stdin.write(prev_last_frame.tobytes())
+                            total_frames_written += 1
+
+                        for i in range(1, n_fade_o + 1):
+                            alpha = 1.0 - (i / float(n_fade_o))
+                            faded = np.clip(prev_last_frame.astype(np.float32) * alpha, 0, 255).astype(np.uint8)
+                            proc_out.stdin.write(faded.tobytes())
+                            total_frames_written += 1
+
+                        if n_black > 0:
+                            black_frame = np.zeros((master_h, master_w, 3), dtype=np.uint8)
+                            for _ in range(n_black):
+                                proc_out.stdin.write(black_frame.tobytes())
+                                total_frames_written += 1
+
+                        for i in range(1, n_fade_i + 1):
+                            alpha = i / float(n_fade_i)
+                            faded = np.clip(first_frame_of_clip.astype(np.float32) * alpha, 0, 255).astype(np.uint8)
+                            proc_out.stdin.write(faded.tobytes())
+                            total_frames_written += 1
+
+                        for _ in range(n_freeze_a):
+                            proc_out.stdin.write(first_frame_of_clip.tobytes())
+                            total_frames_written += 1
+
+                    elif transition_type == "crossfade":
+                        for i in range(1, n_crossfade + 1):
+                            alpha = i / float(n_crossfade)
+                            blended = cv2.addWeighted(prev_last_frame, 1.0 - alpha, first_frame_of_clip, alpha, 0.0)
+                            proc_out.stdin.write(blended.tobytes())
+                            total_frames_written += 1
+
+                    elif transition_type == "hard":
+                        pass
+
+            proc_out.stdin.write(frame.tobytes())
+            last_frame_of_clip = frame.copy()
+            clip_frames_written += 1
             total_frames_written += 1
-            pbar.update(1)
 
-        cap.release()
-        pbar.close()
+        prev_last_frame = last_frame_of_clip
 
-        # Write transition if not last clip
-        if idx < len(clip_paths) - 1:
-            last_frame = clip_last_frames[idx]
-            next_first = clip_first_frames[idx + 1]
+    proc_out.stdin.close()
+    proc_out.wait()
 
-            if last_frame.shape[1] != master_w or last_frame.shape[0] != master_h:
-                last_frame = cv2.resize(last_frame, (master_w, master_h), interpolation=cv2.INTER_LANCZOS4)
-            if next_first.shape[1] != master_w or next_first.shape[0] != master_h:
-                next_first = cv2.resize(next_first, (master_w, master_h), interpolation=cv2.INTER_LANCZOS4)
-
-            if transition_type == "fade_to_black":
-                for _ in range(n_freeze_b):
-                    proc.stdin.write(last_frame.tobytes())
-                    total_frames_written += 1
-
-                for i in range(1, n_fade_o + 1):
-                    alpha = 1.0 - (i / float(n_fade_o))
-                    faded = np.clip(last_frame.astype(np.float32) * alpha, 0, 255).astype(np.uint8)
-                    proc.stdin.write(faded.tobytes())
-                    total_frames_written += 1
-
-                if n_black > 0:
-                    black_frame = np.zeros((master_h, master_w, 3), dtype=np.uint8)
-                    for _ in range(n_black):
-                        proc.stdin.write(black_frame.tobytes())
-                        total_frames_written += 1
-
-                for i in range(1, n_fade_i + 1):
-                    alpha = i / float(n_fade_i)
-                    faded = np.clip(next_first.astype(np.float32) * alpha, 0, 255).astype(np.uint8)
-                    proc.stdin.write(faded.tobytes())
-                    total_frames_written += 1
-
-                for _ in range(n_freeze_a):
-                    proc.stdin.write(next_first.tobytes())
-                    total_frames_written += 1
-
-            elif transition_type == "crossfade":
-                for i in range(1, n_crossfade + 1):
-                    alpha = i / float(n_crossfade)
-                    blended = cv2.addWeighted(last_frame, 1.0 - alpha, next_first, alpha, 0.0)
-                    proc.stdin.write(blended.tobytes())
-                    total_frames_written += 1
-
-            elif transition_type == "hard":
-                pass
-
-    proc.stdin.close()
-    proc.wait()
+    # Move moov atom to beginning with copy faststart
+    cmd_fast = ['ffmpeg', '-y', '-loglevel', 'error', '-i', temp_raw, '-c', 'copy', '-movflags', '+faststart', output_path]
+    subprocess.run(cmd_fast, check=True)
+    if os.path.exists(temp_raw):
+        os.remove(temp_raw)
 
     duration_total_s = total_frames_written / fps
     sz_mb = os.path.getsize(output_path) / (1024 * 1024)
