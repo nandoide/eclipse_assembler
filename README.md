@@ -194,12 +194,15 @@ This pipeline follows **Convention over Configuration (CoC)**. Curated assets in
 git clone https://github.com/nandoide/eclipse_assembler.git
 cd eclipse_assembler
 
+# Switch to the multi-phase processing branch
+git checkout multi
+
 # Create and activate virtual environment
 python3 -m venv .venv
 source .venv/bin/activate
 
-# Install required packages
-pip install numpy opencv-python pillow scipy tqdm
+# Install required dependencies from requirements.txt
+pip install -r requirements.txt
 ```
 
 ---
@@ -373,6 +376,7 @@ eclipse_assembler/
 │   ├── eclipse_composite_circle_*.png# 🖼️ High-resolution circular/ellipse composite artwork
 │   └── eclipse_composite_sinusoid_*.png# 🖼️ High-resolution sinusoidal composite artwork (HD, 4K, 8K)
 │
+├── requirements.txt                  # Python package dependencies
 └── README.md                         # Project documentation
 ```
 
