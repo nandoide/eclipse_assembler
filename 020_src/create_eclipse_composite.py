@@ -223,8 +223,8 @@ def sample_eclipse_sequence(
     dt_pre_tot_start = datetime.datetime(dt_base.year, dt_base.month, dt_base.day, 20, 20, 36) + delta_offset
     dt_pre_tot_end   = datetime.datetime(dt_base.year, dt_base.month, dt_base.day, 20, 26, 47) + delta_offset
 
-    dt_totality_start = datetime.datetime(dt_base.year, dt_base.month, dt_base.day, 20, 26, 48) + delta_offset
-    dt_totality_end   = datetime.datetime(dt_base.year, dt_base.month, dt_base.day, 20, 28, 25) + delta_offset
+    dt_totality_start = datetime.datetime(dt_base.year, dt_base.month, dt_base.day, 20, 27, 31, 588000)
+    dt_totality_end   = datetime.datetime(dt_base.year, dt_base.month, dt_base.day, 20, 29, 18, 921000)
 
     dt_egress_start = datetime.datetime(dt_base.year, dt_base.month, dt_base.day, 20, 35, 24) + delta_offset
     dt_egress_end   = datetime.datetime(dt_base.year, dt_base.month, dt_base.day, 21, 16, 44) + delta_offset
@@ -295,20 +295,21 @@ def sample_eclipse_sequence(
 
     # 3. Totality Keyframes (6 samples)
     if "totality" in caps and counts["totality"] > 0:
-        tot_indices = [
-            (30,   "ingress_beads"),
-            (70,   "ingress_chromosphere"),
-            (600,  "inner_corona"),
-            (1200, "grand_corona"),
-            (2700, "egress_chromosphere"),
-            (2850, "egress_beads"),
-        ]
+        tot_fps = caps["totality"].get(cv2.CAP_PROP_FPS) or 30.0
         tot_total = counts["totality"]
-        for fi, label in tot_indices:
-            actual_fi = min(tot_total - 1, fi)
+        tot_key_moments = [
+            (3.45,   "ingress_beads"),        # C2 -> 20:27:35 CEST
+            (10.00,  "ingress_chromosphere"), # 20:27:41 CEST
+            (25.00,  "inner_corona"),         # 20:27:56 CEST
+            (51.73,  "grand_corona"),         # TOTAL -> 20:28:23 CEST
+            (98.00,  "egress_chromosphere"),  # 20:29:09 CEST
+            (100.50, "egress_beads"),         # C3 -> 20:29:12 CEST
+        ]
+        for t_sec, label in tot_key_moments:
+            actual_fi = min(tot_total - 1, int(round(t_sec * tot_fps)))
             f = read_at(caps["totality"], actual_fi, tot_total)
             if f is not None:
-                dt_sample = dt_totality_start + datetime.timedelta(seconds=actual_fi / 30.0)
+                dt_sample = dt_totality_start + datetime.timedelta(seconds=t_sec)
                 samples.append({
                     "phase": "totality",
                     "label": label,
@@ -349,11 +350,12 @@ def sample_eclipse_sequence(
 # LAYOUT ENGINES
 # ─────────────────────────────────────────────────────────────────────────────
 
-def render_consistent_scale(samples, positions, width=1280, height=720, disk_scale_factor=0.78, show_labels=False):
+def render_consistent_scale(samples, positions, width=1280, height=720, disk_scale_factor=0.78, show_labels=False, featured_contacts=None):
     """
     Composites all frames into the black canvas with consistent disk scaling and soft additive blending.
     Uses minimum distance between adjacent frames to ensure clean, non-overlapping spacing.
     Optionally overlays centered astronomical timestamp labels (HH:MM:SS) below each frame.
+    Optionally overlays prominent featured totality contacts (C2, TOTAL, C3) inside central cavity.
     """
     canvas = np.zeros((height, width, 3), dtype=np.float32)
     N = len(positions)
@@ -400,10 +402,42 @@ def render_consistent_scale(samples, positions, width=1280, height=720, disk_sca
             blended = np.maximum(curr_reg, patch_reg)
             canvas[cy1:cy2, cx1:cx2] = blended
 
+    # Draw Featured Totality Contacts (C2, TOTAL, C3) if provided
+    if featured_contacts:
+        for item in featured_contacts:
+            s = item["sample"]
+            px, py = item["pos"]
+            d_inner = item["disk_d"]
+            inner_scale = d_inner / 500.0
+            in_patch_sz = max(64, int(round(1280 * inner_scale)))
+            in_patch_sz = (in_patch_sz // 2) * 2
+            half_in = in_patch_sz // 2
+
+            patch = cv2.resize(s["img"], (in_patch_sz, in_patch_sz), interpolation=cv2.INTER_LANCZOS4).astype(np.float32)
+
+            x1 = int(round(px - half_in))
+            y1 = int(round(py - half_in))
+            x2 = x1 + in_patch_sz
+            y2 = y1 + in_patch_sz
+
+            cx1, cy1 = max(0, x1), max(0, y1)
+            cx2, cy2 = min(width, x2), min(height, y2)
+
+            px1 = cx1 - x1
+            py1 = cy1 - y1
+            px2 = px1 + (cx2 - cx1)
+            py2 = py1 + (cy2 - cy1)
+
+            if cx2 > cx1 and cy2 > cy1:
+                curr_reg = canvas[cy1:cy2, cx1:cx2]
+                patch_reg = patch[py1:py2, px1:px2]
+                blended = np.maximum(curr_reg, patch_reg)
+                canvas[cy1:cy2, cx1:cx2] = blended
+
     out_img = np.clip(canvas, 0, 255).astype(np.uint8)
 
-    # Overlay centered HH:MM:SS timestamp labels if requested
-    if show_labels:
+    # Overlay centered labels using PIL TrueType anti-aliased font
+    if show_labels or featured_contacts:
         img_rgb = cv2.cvtColor(out_img, cv2.COLOR_BGR2RGB)
         pil_img = Image.fromarray(img_rgb)
         draw = ImageDraw.Draw(pil_img)
@@ -428,42 +462,93 @@ def render_consistent_scale(samples, positions, width=1280, height=720, disk_sca
         if font is None:
             font = ImageFont.load_default()
 
-        label_offset_y = (target_disk_d / 2.0) + (font_sz * 0.45)
+        if show_labels:
+            label_offset_y = (target_disk_d / 2.0) + (font_sz * 0.45)
+            for i in range(N):
+                s = samples[i]
+                time_str = s.get("timestamp_str", "")
+                if not time_str:
+                    continue
 
-        for i in range(N):
-            s = samples[i]
-            time_str = s.get("timestamp_str", "")
-            if not time_str:
-                continue
+                px, py = positions[i]
+                bbox = draw.textbbox((0, 0), time_str, font=font)
+                tw = bbox[2] - bbox[0]
+                th = bbox[3] - bbox[1]
 
-            px, py = positions[i]
-            bbox = draw.textbbox((0, 0), time_str, font=font)
-            tw = bbox[2] - bbox[0]
-            th = bbox[3] - bbox[1]
+                tx = px - tw / 2.0
+                ty = py + label_offset_y
 
-            tx = px - tw / 2.0
-            ty = py + label_offset_y
+                # Keep within canvas bounds
+                if ty + th > height - 10:
+                    ty = py - (target_disk_d / 2.0) - th - (font_sz * 0.45)
 
-            # Keep within canvas bounds
-            if ty + th > height - 10:
-                ty = py - (target_disk_d / 2.0) - th - (font_sz * 0.45)
+                # Soft dark drop shadow for high contrast
+                draw.text((tx + 1, ty + 1), time_str, font=font, fill=(0, 0, 0))
+                draw.text((tx - 1, ty + 1), time_str, font=font, fill=(0, 0, 0))
+                draw.text((tx + 1, ty - 1), time_str, font=font, fill=(0, 0, 0))
+                draw.text((tx - 1, ty - 1), time_str, font=font, fill=(0, 0, 0))
 
-            # Soft dark drop shadow for high contrast
-            draw.text((tx + 1, ty + 1), time_str, font=font, fill=(0, 0, 0))
-            draw.text((tx - 1, ty + 1), time_str, font=font, fill=(0, 0, 0))
-            draw.text((tx + 1, ty - 1), time_str, font=font, fill=(0, 0, 0))
-            draw.text((tx - 1, ty - 1), time_str, font=font, fill=(0, 0, 0))
+                # Foreground text color: subtle gold for totality, crisp white for partials
+                text_color = (255, 230, 160) if s.get("phase") == "totality" else (235, 235, 240)
+                draw.text((tx, ty), time_str, font=font, fill=text_color)
 
-            # Foreground text color: subtle gold for totality, crisp white for partials
-            text_color = (255, 230, 160) if s.get("phase") == "totality" else (235, 235, 240)
-            draw.text((tx, ty), time_str, font=font, fill=text_color)
+        # 2. Overlay contacts labels if present
+        if featured_contacts:
+            for item in featured_contacts:
+                contact_label = item.get("label", "")
+                if not contact_label:
+                    continue
+
+                px, py = item["pos"]
+                d_inner = item["disk_d"]
+                inner_scale = d_inner / 500.0
+                in_patch_sz = max(64, int(round(1280 * inner_scale)))
+                half_in = in_patch_sz // 2
+
+                inner_font_sz = max(13, int(round(d_inner * 0.088)))
+                inner_font = None
+                for fp in [
+                    "/System/Library/Fonts/Helvetica.ttc",
+                    "/Library/Fonts/Arial.ttf",
+                    "/System/Library/Fonts/Supplemental/Arial.ttf",
+                    "/usr/share/fonts/truetype/dejavu/DejaVuSans-Bold.ttf",
+                ]:
+                    if os.path.exists(fp):
+                        try:
+                            inner_font = ImageFont.truetype(fp, inner_font_sz)
+                            break
+                        except Exception:
+                            pass
+                if inner_font is None:
+                    inner_font = font
+
+
+                bbox = draw.textbbox((0, 0), contact_label, font=inner_font)
+                tw = bbox[2] - bbox[0]
+                th = bbox[3] - bbox[1]
+
+                tx = px - tw / 2.0
+                ty = py + (d_inner / 2.0) + (inner_font_sz * 0.40)
+
+                # Keep within canvas bounds
+                if ty + th > height - 10:
+                    ty = py - (d_inner / 2.0) - th - (inner_font_sz * 0.40)
+
+                # Dark drop shadow for high contrast
+                draw.text((tx + 1, ty + 1), contact_label, font=inner_font, fill=(0, 0, 0))
+                draw.text((tx - 1, ty + 1), contact_label, font=inner_font, fill=(0, 0, 0))
+                draw.text((tx + 1, ty - 1), contact_label, font=inner_font, fill=(0, 0, 0))
+                draw.text((tx - 1, ty - 1), contact_label, font=inner_font, fill=(0, 0, 0))
+
+                # Elegant warm golden color for the featured inner labels
+                draw.text((tx, ty), contact_label, font=inner_font, fill=(255, 232, 170))
 
         out_img = cv2.cvtColor(np.array(pil_img), cv2.COLOR_RGB2BGR)
 
     return out_img
 
 
-def generate_circular_composite(samples, width=1280, height=720, orbit_radius=None, direction="cw", disk_scale_factor=0.78, show_labels=False):
+def generate_circular_composite(samples, width=1280, height=720, orbit_radius=None, direction="cw", disk_scale_factor=0.78, show_labels=False, contacts="auto"):
     cx, cy = width / 2.0, height / 2.0
 
     # For square format (W == H): Rx == Ry (perfect circle)
@@ -515,14 +600,81 @@ def generate_circular_composite(samples, width=1280, height=720, orbit_radius=No
         positions[i, 0] = interp_x(s_val)
         positions[i, 1] = interp_y(s_val)
 
-    return render_consistent_scale(samples, positions, width=width, height=height, disk_scale_factor=disk_scale_factor, show_labels=show_labels)
+    # Compute Featured Totality Contacts (C2, TOTAL, C3) if enabled
+    featured_contacts_data = None
+    if contacts and contacts != "none":
+        c2_sample = next((s for s in samples if s.get("label") == "ingress_beads"), None)
+        if c2_sample is None:
+            c2_sample = next((s for s in samples if s.get("phase") == "totality"), None)
+
+        tot_sample = next((s for s in samples if s.get("label") == "grand_corona"), None)
+        if tot_sample is None:
+            tot_samples = [s for s in samples if s.get("phase") == "totality"]
+            tot_sample = tot_samples[len(tot_samples) // 2] if tot_samples else None
+
+        c3_sample = next((s for s in samples if s.get("label") == "egress_beads"), None)
+        if c3_sample is None:
+            tot_samples = [s for s in samples if s.get("phase") == "totality"]
+            c3_sample = tot_samples[-1] if tot_samples else None
+
+        if c2_sample and tot_sample and c3_sample:
+            if contacts == "vertical" or (contacts in ["auto", True] and height > width):
+                is_vert = True
+            else:
+                is_vert = False
+
+            diffs = np.diff(positions, axis=0)
+            dists = np.sqrt(np.sum(diffs**2, axis=1))
+            min_d = float(np.min(dists)) if len(dists) > 0 else 300.0
+            outer_disk_d = min_d * disk_scale_factor
+
+            w_cavity = rx - outer_disk_d / 2.0
+            h_cavity = ry - outer_disk_d / 2.0
+
+            if is_vert:
+                # Vertical Contacts: C2 top, TOTAL center, C3 bottom
+                d_inner = min(outer_disk_d * 1.22, (2.0 * h_cavity) / 4.2, w_cavity * 0.76)
+                spacing = d_inner * 1.28
+                p_c2 = np.array([cx, cy - spacing], dtype=np.float32)
+                p_tot = np.array([cx, cy], dtype=np.float32)
+                p_c3 = np.array([cx, cy + spacing], dtype=np.float32)
+            else:
+                # Horizontal Contacts: C2 left, TOTAL center, C3 right
+                d_inner = min(outer_disk_d * 1.22, (2.0 * w_cavity) / 4.2, h_cavity * 0.76)
+                spacing = d_inner * 1.28
+                p_c2 = np.array([cx - spacing, cy], dtype=np.float32)
+                p_tot = np.array([cx, cy], dtype=np.float32)
+                p_c3 = np.array([cx + spacing, cy], dtype=np.float32)
+
+            featured_contacts_data = [
+                {
+                    "sample": c2_sample,
+                    "pos": p_c2,
+                    "disk_d": d_inner,
+                    "label": f"C2 {c2_sample['timestamp_str']}"
+                },
+                {
+                    "sample": tot_sample,
+                    "pos": p_tot,
+                    "disk_d": d_inner,
+                    "label": f"TOTAL {tot_sample['timestamp_str']}"
+                },
+                {
+                    "sample": c3_sample,
+                    "pos": p_c3,
+                    "disk_d": d_inner,
+                    "label": f"C3 {c3_sample['timestamp_str']}"
+                }
+            ]
+
+    return render_consistent_scale(samples, positions, width=width, height=height, disk_scale_factor=disk_scale_factor, show_labels=show_labels, featured_contacts=featured_contacts_data)
 
 
-def generate_sinusoid_composite(samples, width=1280, height=720, margin=None, amplitude=None, disk_scale_factor=0.78, show_labels=False):
+def generate_sinusoid_composite(samples, width=1280, height=720, margin=None, amplitude=None, disk_scale_factor=0.78, show_labels=False, contacts="auto"):
     N = len(samples)
     mx = margin or int(width * 0.08)
     amp = amplitude or int(height * 0.25)
-    cy = height / 2.0
+    cx, cy = width / 2.0, height / 2.0
 
     # Equal arc-length parameterization along the sinusoidal wave to prevent bunching at crests
     dense_t = np.linspace(0.0, 1.0, 2000)
@@ -539,7 +691,60 @@ def generate_sinusoid_composite(samples, width=1280, height=720, margin=None, am
     interp_y = interp1d(cum_len, dense_y)
 
     positions = np.column_stack([interp_x(target_s), interp_y(target_s)]).astype(np.float32)
-    return render_consistent_scale(samples, positions, width=width, height=height, disk_scale_factor=disk_scale_factor, show_labels=show_labels)
+
+    # Compute Featured Totality Contacts (C2, TOTAL, C3) in lower central vault if enabled
+    featured_contacts_data = None
+    if contacts and contacts != "none":
+        c2_sample = next((s for s in samples if s.get("label") == "ingress_beads"), None)
+        if c2_sample is None:
+            c2_sample = next((s for s in samples if s.get("phase") == "totality"), None)
+
+        tot_sample = next((s for s in samples if s.get("label") == "grand_corona"), None)
+        if tot_sample is None:
+            tot_samples = [s for s in samples if s.get("phase") == "totality"]
+            tot_sample = tot_samples[len(tot_samples) // 2] if tot_samples else None
+
+        c3_sample = next((s for s in samples if s.get("label") == "egress_beads"), None)
+        if c3_sample is None:
+            tot_samples = [s for s in samples if s.get("phase") == "totality"]
+            c3_sample = tot_samples[-1] if tot_samples else None
+
+        if c2_sample and tot_sample and c3_sample:
+            diffs = np.diff(positions, axis=0)
+            dists = np.sqrt(np.sum(diffs**2, axis=1))
+            min_d = float(np.min(dists)) if len(dists) > 0 else 300.0
+            outer_disk_d = min_d * disk_scale_factor
+
+            d_inner = outer_disk_d * 1.22
+            spacing = d_inner * 1.35
+            y_contacts = cy + amp * 0.52
+
+            p_c2 = np.array([cx - spacing, y_contacts], dtype=np.float32)
+            p_tot = np.array([cx, y_contacts], dtype=np.float32)
+            p_c3 = np.array([cx + spacing, y_contacts], dtype=np.float32)
+
+            featured_contacts_data = [
+                {
+                    "sample": c2_sample,
+                    "pos": p_c2,
+                    "disk_d": d_inner,
+                    "label": f"C2 {c2_sample['timestamp_str']}"
+                },
+                {
+                    "sample": tot_sample,
+                    "pos": p_tot,
+                    "disk_d": d_inner,
+                    "label": f"TOTAL {tot_sample['timestamp_str']}"
+                },
+                {
+                    "sample": c3_sample,
+                    "pos": p_c3,
+                    "disk_d": d_inner,
+                    "label": f"C3 {c3_sample['timestamp_str']}"
+                }
+            ]
+
+    return render_consistent_scale(samples, positions, width=width, height=height, disk_scale_factor=disk_scale_factor, show_labels=show_labels, featured_contacts=featured_contacts_data)
 
 
 def generate_vertical_composite(samples, width=2160, height=3840, margin=None, disk_scale_factor=0.78, show_labels=False):
@@ -608,14 +813,21 @@ def generate_horizontal_composite(samples, width=1280, height=720, margin=None, 
     return render_consistent_scale(samples, positions, width=width, height=height, disk_scale_factor=disk_scale_factor, show_labels=show_labels)
 
 
-def generate_arc_composite(samples, width=1280, height=720, margin_x=None, disk_scale_factor=0.78, show_labels=False):
+def generate_arc_composite(samples, width=1280, height=720, margin_x=None, disk_scale_factor=0.78, show_labels=False, contacts="auto"):
     N = len(samples)
     mx = margin_x or int(width * 0.08)
-    cy = height * 0.70
-    h_arc = height * 0.40
+    cx = width / 2.0
+
+    # Expand arch vertically on portrait formats (height > width) to utilize canvas space generously
+    if height > width:
+        cy = height * 0.85
+        h_arc = height * 0.65
+    else:
+        cy = height * 0.70
+        h_arc = height * 0.40
 
     dense_x = np.linspace(mx, width - mx, 2000)
-    norm_x = (dense_x - width / 2.0) / ((width - 2 * mx) / 2.0)
+    norm_x = (dense_x - cx) / ((width - 2 * mx) / 2.0)
     dense_y = cy - h_arc * (1.0 - norm_x**2)
 
     dx = np.diff(dense_x)
@@ -628,7 +840,74 @@ def generate_arc_composite(samples, width=1280, height=720, margin_x=None, disk_
     interp_y = interp1d(cum_len, dense_y)
 
     positions = np.column_stack([interp_x(target_s), interp_y(target_s)]).astype(np.float32)
-    return render_consistent_scale(samples, positions, width=width, height=height, disk_scale_factor=disk_scale_factor, show_labels=show_labels)
+
+    # Compute Featured Totality Contacts (C2, TOTAL, C3) in central vault of arc
+    featured_contacts_data = None
+    if contacts and contacts != "none":
+        c2_sample = next((s for s in samples if s.get("label") == "ingress_beads"), None)
+        if c2_sample is None:
+            c2_sample = next((s for s in samples if s.get("phase") == "totality"), None)
+
+        tot_sample = next((s for s in samples if s.get("label") == "grand_corona"), None)
+        if tot_sample is None:
+            tot_samples = [s for s in samples if s.get("phase") == "totality"]
+            tot_sample = tot_samples[len(tot_samples) // 2] if tot_samples else None
+
+        c3_sample = next((s for s in samples if s.get("label") == "egress_beads"), None)
+        if c3_sample is None:
+            tot_samples = [s for s in samples if s.get("phase") == "totality"]
+            c3_sample = tot_samples[-1] if tot_samples else None
+
+        if c2_sample and tot_sample and c3_sample:
+            diffs = np.diff(positions, axis=0)
+            dists = np.sqrt(np.sum(diffs**2, axis=1))
+            min_d = float(np.min(dists)) if len(dists) > 0 else 300.0
+            outer_disk_d = min_d * disk_scale_factor
+
+            if contacts == "vertical" or (contacts in ["auto", True] and height > width):
+                is_vert = True
+            else:
+                is_vert = False
+
+            if is_vert:
+                # Vertical Contacts for portrait frames: C2 top, TOTAL center, C3 bottom
+                d_inner = outer_disk_d * 1.22
+                spacing = d_inner * 1.30
+                contacts_cy = cy - h_arc * 0.40
+                p_c2 = np.array([cx, contacts_cy - spacing], dtype=np.float32)
+                p_tot = np.array([cx, contacts_cy], dtype=np.float32)
+                p_c3 = np.array([cx, contacts_cy + spacing], dtype=np.float32)
+            else:
+                # Horizontal Contacts for landscape frames: C2 left, TOTAL center, C3 right
+                d_inner = outer_disk_d * 1.22
+                spacing = d_inner * 1.35
+                y_contacts = height * 0.74
+                p_c2 = np.array([cx - spacing, y_contacts], dtype=np.float32)
+                p_tot = np.array([cx, y_contacts], dtype=np.float32)
+                p_c3 = np.array([cx + spacing, y_contacts], dtype=np.float32)
+
+            featured_contacts_data = [
+                {
+                    "sample": c2_sample,
+                    "pos": p_c2,
+                    "disk_d": d_inner,
+                    "label": f"C2 {c2_sample['timestamp_str']}"
+                },
+                {
+                    "sample": tot_sample,
+                    "pos": p_tot,
+                    "disk_d": d_inner,
+                    "label": f"TOTAL {tot_sample['timestamp_str']}"
+                },
+                {
+                    "sample": c3_sample,
+                    "pos": p_c3,
+                    "disk_d": d_inner,
+                    "label": f"C3 {c3_sample['timestamp_str']}"
+                }
+            ]
+
+    return render_consistent_scale(samples, positions, width=width, height=height, disk_scale_factor=disk_scale_factor, show_labels=show_labels, featured_contacts=featured_contacts_data)
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -648,6 +927,7 @@ def build_composite(
     date_str=None,
     force_db=False,
     show_labels=False,
+    contacts="auto",
     out_dir="040_out",
     output_path=None,
 ):
@@ -661,6 +941,8 @@ def build_composite(
     print(f"  Resolution        : {width}x{height} px")
     print(f"  Disk Scale Factor : {disk_scale_factor:.2f}")
     print(f"  Labels (Timestamps): {'ENABLED (HH:MM:SS)' if show_labels else 'DISABLED'}")
+    if layout in ["circle", "ring", "ellipse", "oval", "sinusoid", "s-curve", "s", "sinusoidal", "arc"]:
+        print(f"  Totality Contacts : {contacts.upper()} (C2, TOTAL, C3)")
 
     samples = sample_eclipse_sequence(
         out_dir=resolved_out,
@@ -686,6 +968,7 @@ def build_composite(
             direction=direction or "cw",
             disk_scale_factor=disk_scale_factor,
             show_labels=show_labels,
+            contacts=contacts,
         )
         suffix = "circle" if width == height else "ellipse"
 
@@ -696,6 +979,7 @@ def build_composite(
             amplitude=amplitude,
             disk_scale_factor=disk_scale_factor,
             show_labels=show_labels,
+            contacts=contacts,
         )
         suffix = "sinusoid"
 
@@ -743,6 +1027,7 @@ def build_composite(
             margin_x=margin,
             disk_scale_factor=disk_scale_factor,
             show_labels=show_labels,
+            contacts=contacts,
         )
         suffix = "arc"
 
@@ -770,6 +1055,7 @@ def build_composite(
         "height": height,
         "disk_scale_factor": disk_scale_factor,
         "show_labels": show_labels,
+        "contacts": contacts,
         "sample_count": len(samples),
         "first_sample_time": first_dt.strftime("%H:%M:%S CEST"),
         "last_sample_time": last_dt.strftime("%H:%M:%S CEST"),
@@ -842,6 +1128,11 @@ if __name__ == "__main__":
                         help="Force rebuilding/refreshing eclipse database")
     parser.add_argument("--show-labels", "--timestamps", "--labels", "-t", action="store_true",
                         help="Overlay centered HH:MM:SS timestamp labels below each solar disk")
+    parser.add_argument("--contacts", type=str, nargs="?", const="auto",
+                        choices=["auto", "horizontal", "vertical", "none"], default="auto",
+                        help="Featured totality contacts sequence (C2, TOTAL, C3) layout (auto/horizontal/vertical/none, default: auto)")
+    parser.add_argument("--no-contacts", dest="contacts", action="store_const", const="none",
+                        help="Disable featured totality contacts sequence (render only the primary layout curve)")
     parser.add_argument("--output", "-o", type=str, default=None,
                         help="Custom output path (default: 040_out/eclipse_composite_<layout>_<resolution>.png)")
     args = parser.parse_args()
@@ -871,6 +1162,7 @@ if __name__ == "__main__":
             date_str=args.date,
             force_db=args.force_db,
             show_labels=args.show_labels,
+            contacts=args.contacts,
             out_dir="040_out",
             output_path=args.output if args.layout != "all" else None,
         )

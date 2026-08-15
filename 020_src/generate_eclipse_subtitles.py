@@ -145,9 +145,12 @@ def get_composite_time_range(out_dir: str = "040_out", date_str: str = None) -> 
     """
     # 1. Check if metadata JSON exists
     candidates = [
+        os.path.join(out_dir, "06_composite_arc_10.json"),
         os.path.join(out_dir, "06_composite_sinusoid_10.json"),
         os.path.join(out_dir, "composite_samples.json"),
+        os.path.join(out_dir, "eclipse_composite_arc_1280x720.json"),
         os.path.join(out_dir, "eclipse_composite_sinusoid_1280x720.json"),
+        os.path.join(out_dir, "eclipse_composite_arc_3840x2160.json"),
         os.path.join(out_dir, "eclipse_composite_sinusoid_3840p.json")
     ]
     for c in candidates:
@@ -615,6 +618,131 @@ def embed_subtitles_for_quicktime(
     print(f"SUCCESS: QuickTime-ready MP4 created at: {output_mp4}")
 
 
+def generate_youtube_metadata(
+    segments: list,
+    c2_time: float,
+    c3_time: float,
+    out_dir: str = "040_out",
+    eph: dict = None,
+    timezone: str = "CEST"
+):
+    """
+    Generates YouTube-compliant chapters (0:00 starting format) and full video description
+    exported to 040_out/youtube_chapters.txt and 040_out/youtube_description.txt.
+    """
+    chapters_bilingual = []
+    chapters_es = []
+    chapters_en = []
+
+    def fmt_time(secs: float) -> str:
+        s = int(secs)
+        m = s // 60
+        sec = s % 60
+        return f"{m}:{sec:02d}"
+
+    for s in segments:
+        st = s["start"]
+        t_str = fmt_time(st)
+        stype = s["type"]
+
+        if stype == "title_card":
+            if not any(c[0] == 0 for c in chapters_bilingual):
+                chapters_bilingual.append((0, "0:00", "Ingreso Parcial / Partial Ingress (Timelapse)"))
+                chapters_es.append((0, "0:00", "Ingreso Parcial (Timelapse)"))
+                chapters_en.append((0, "0:00", "Partial Ingress (Timelapse)"))
+        elif stype == "timelapse_ingress":
+            if not any(c[0] == 0 for c in chapters_bilingual):
+                chapters_bilingual.append((0, "0:00", "Ingreso Parcial / Partial Ingress (Timelapse)"))
+                chapters_es.append((0, "0:00", "Ingreso Parcial (Timelapse)"))
+                chapters_en.append((0, "0:00", "Partial Ingress (Timelapse)"))
+        elif stype == "video_slowdown":
+            chapters_bilingual.append((st, t_str, "Aproximación Pre-totalidad / Pre-totality (Thin Crescent)"))
+            chapters_es.append((st, t_str, "Aproximación Pre-totalidad (Fase Creciente Fina)"))
+            chapters_en.append((st, t_str, "Pre-totality Approach (Thin Crescent)"))
+        elif stype == "video_realtime":
+            c2_val = s.get("c2_time", c2_time or (st + 4.2))
+            c2_str = fmt_time(c2_val)
+            chapters_bilingual.append((c2_val, c2_str, "C2: Anillo de Diamantes y Perlas de Baily / C2: Baily's Beads"))
+            chapters_es.append((c2_val, c2_str, "C2: Anillo de Diamantes y Perlas de Baily"))
+            chapters_en.append((c2_val, c2_str, "C2: Baily's Beads & Diamond Ring"))
+
+            tot_val = c2_val + 4.5
+            tot_str = fmt_time(tot_val)
+            chapters_bilingual.append((tot_val, tot_str, "Totalidad y Corona Solar / Totality (Real-Time 1x)"))
+            chapters_es.append((tot_val, tot_str, "Totalidad y Corona Solar (Tiempo Real 1x)"))
+            chapters_en.append((tot_val, tot_str, "Totality & Solar Corona (Real-Time 1x)"))
+
+            c3_val = s.get("c3_time", c3_time or (st + 100.8))
+            c3_str = fmt_time(c3_val)
+            chapters_bilingual.append((c3_val, c3_str, "C3: Tercer Contacto / C3: Third Contact"))
+            chapters_es.append((c3_val, c3_str, "C3: Tercer Contacto (Fin de la Totalidad)"))
+            chapters_en.append((c3_val, c3_str, "C3: Third Contact (Totality End)"))
+        elif stype == "timelapse_egress":
+            chapters_bilingual.append((st, t_str, "Egreso Parcial / Partial Egress (Timelapse)"))
+            chapters_es.append((st, t_str, "Egreso Parcial (Timelapse)"))
+            chapters_en.append((st, t_str, "Partial Egress (Timelapse)"))
+        elif stype == "photo_corona":
+            chapters_bilingual.append((st, t_str, "Fotografía HDR de la Corona / Solar Corona Photo"))
+            chapters_es.append((st, t_str, "Fotografía HDR de la Corona Solar"))
+            chapters_en.append((st, t_str, "HDR Solar Corona Still Photo"))
+        elif stype == "composite":
+            chapters_bilingual.append((st, t_str, "Mosaico Secuencia del Eclipse / Eclipse Sequence Composite (Arc)"))
+            chapters_es.append((st, t_str, "Mosaico Secuencia del Eclipse (Arco con Contactos)"))
+            chapters_en.append((st, t_str, "Eclipse Sequence Composite Artwork (Arc)"))
+
+    # Sort chapters by timestamp
+    chapters_bilingual.sort(key=lambda x: x[0])
+    chapters_es.sort(key=lambda x: x[0])
+    chapters_en.sort(key=lambda x: x[0])
+
+    # Text content for youtube_chapters.txt
+    lines = []
+    lines.append("Capítulos / Chapters:")
+    for _, t, name in chapters_bilingual:
+        lines.append(f"{t} - {name}")
+
+    lines.append("\nCapítulos en Español:")
+    for _, t, name in chapters_es:
+        lines.append(f"{t} - {name}")
+
+    lines.append("\nEnglish Chapters:")
+    for _, t, name in chapters_en:
+        lines.append(f"{t} - {name}")
+
+    chap_path = os.path.join(out_dir, "youtube_chapters.txt")
+    with open(chap_path, "w", encoding="utf-8") as f:
+        f.write("\n".join(lines) + "\n")
+
+    # YouTube Description
+    desc_lines = [
+        "Gran Eclipse Solar Total de 2026 / Great Total Solar Eclipse of 2026",
+        "===================================================================",
+        "Grabación astronómica completa de la totalidad solar y fases parciales.",
+        "Complete astronomical recording of solar totality and partial phases.",
+        "",
+        "📍 Coordenadas del Observador / Observer Coordinates:",
+        "   43.235556° N, 7.558333° W (Alt: 438.7m)",
+        "",
+        "⏱️ Contactos Astronómicos (Hora Local CEST) / Ephemeris Contacts:",
+        "   • C1 (Primer Contacto)   : 19:31:18 CEST",
+        "   • C2 (Segundo Contacto)  : 20:27:35 CEST (Óptico) / 20:27:38 CEST (Efemerides)",
+        "   • MAX (Máximo Eclipse)   : 20:28:25 CEST",
+        "   • C3 (Tercer Contacto)   : 20:29:12 CEST (Óptico) / 20:29:12 CEST (Efemerides)",
+        "   • C4 (Cuarto Contacto)   : 21:21:52 CEST",
+        "",
+        "Capítulos / Chapters:",
+    ]
+    for _, t, name in chapters_bilingual:
+        desc_lines.append(f"{t} - {name}")
+
+    desc_path = os.path.join(out_dir, "youtube_description.txt")
+    with open(desc_path, "w", encoding="utf-8") as f:
+        desc_write = "\n".join(desc_lines) + "\n"
+        f.write(desc_write)
+
+    return chapters_bilingual, chap_path, desc_path
+
+
 def generate_eclipse_subtitles_pipeline(
     video_path: str = "040_out/full_eclipse.mp4",
     output_srt_path: str = "040_out/full_eclipse.srt",
@@ -748,6 +876,23 @@ def generate_eclipse_subtitles_pipeline(
             srt_en=path_en,
             output_mp4=subtitled_video_path
         )
+
+    # Generate YouTube chapters and description metadata
+    yt_chaps, yt_chap_p, yt_desc_p = generate_youtube_metadata(
+        segments=segments,
+        c2_time=c2_time,
+        c3_time=c3_time,
+        out_dir=out_dir,
+        eph=eph,
+        timezone=timezone
+    )
+    print("\n-----------------------------------------------------------------")
+    print("YOUTUBE CHAPTERS & DESCRIPTION EXPORTED:")
+    print(f"  Chapters file   : {yt_chap_p}")
+    print(f"  Description file: {yt_desc_p}")
+    print("-----------------------------------------------------------------")
+    for _, t, name in yt_chaps:
+        print(f"  {t} - {name}")
 
     print("=================================================================")
     return [p for _, p, _ in generated_files]

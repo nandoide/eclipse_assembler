@@ -115,7 +115,7 @@ def parse_coc_filename(filepath):
         asset_type = "composite"
         for tok in tokens[1:]:
             tok_l = tok.lower()
-            if tok_l in ["sinusoid", "circle", "diagonal", "horizontal", "vertical"]:
+            if tok_l in ["sinusoid", "circle", "diagonal", "horizontal", "vertical", "arc", "ellipse", "vertical-s"]:
                 layout = tok_l
             elif "x" in tok_l:
                 res_parts = tok_l.split("x")
@@ -782,11 +782,13 @@ def process_composite_asset(
     duration_s = asset_meta.get('duration', 10.0)
     idx = asset_meta.get('index', 6)
 
-    # 1. Generate high-res composite artwork image via build_composite
+    # 1. Generate high-res composite artwork image via build_composite (clean without timestamps, with contacts)
     composite_png = cec.build_composite(
         layout=layout,
         width=comp_w,
         height=comp_h,
+        show_labels=False,
+        contacts="auto",
         out_dir=out_dir
     )
     composite_img = cv2.imread(composite_png)
