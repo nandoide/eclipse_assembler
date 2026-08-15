@@ -42,10 +42,14 @@ from tqdm import tqdm
 from scipy.optimize import minimize
 from scipy.ndimage import uniform_filter1d
 
-# Import composite engine for on-the-fly composite asset generation
+# Import modular external engines
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+import create_title_card as ctc
 import create_eclipse_composite as cec
+import generate_eclipse_subtitles as ges
+import eclipse_ephemeris_db as eedb
 from stabilize_eclipse import extract_pure_solar_limb, find_circle_center_fixed_r
+
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -71,11 +75,21 @@ def parse_coc_filename(filepath):
     asset_type = None
     duration = 10.0
     layout = "sinusoid"
-    comp_w = 3840
-    comp_h = 3840
+    comp_w = None
+    comp_h = None
 
+    interval = None
     if primary_token == "timelapse":
         asset_type = "timelapse"
+        interval = 10.0
+        for tok in tokens[1:]:
+            tok_l = tok.lower()
+            if tok_l.startswith("i") and tok_l[1:].replace('.', '', 1).isdigit():
+                interval = float(tok_l[1:])
+            elif tok_l.endswith("s") and tok_l[:-1].replace('.', '', 1).isdigit():
+                interval = float(tok_l[:-1])
+            elif tok_l.replace('.', '', 1).isdigit():
+                interval = float(tok_l)
 
     elif primary_token == "video":
         sub_type = tokens[1].lower() if len(tokens) > 1 else "realtime"
@@ -120,6 +134,7 @@ def parse_coc_filename(filepath):
         'path': filepath,
         'asset_type': asset_type,
         'duration': duration,
+        'interval': interval,
         'layout': layout,
         'comp_width': comp_w,
         'comp_height': comp_h,
@@ -614,7 +629,12 @@ def process_video_realtime_asset(
     cap.release()
     pbar.close()
 
-    # Pass 2: Warp and encode with streaming
+    # Pass 2: Warp and encode with streaming (preserving exact 1:1 real-time duration)
+    cap = cv2.VideoCapture(in_path)
+    native_fps = cap.get(cv2.CAP_PROP_FPS) or 27.307
+    real_duration_s = len(centers) / native_fps
+    target_total_frames = int(round(real_duration_s * fps))
+
     ffmpeg_cmd = [
         'ffmpeg', '-y', '-loglevel', 'error',
         '-f', 'rawvideo', '-vcodec', 'rawvideo',
@@ -637,20 +657,30 @@ def process_video_realtime_asset(
     proc = subprocess.Popen(ffmpeg_cmd, stdin=subprocess.PIPE, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
 
     off_x, off_y = shift_offset
-    cap = cv2.VideoCapture(in_path)
-    pbar = tqdm(total=len(centers), desc="Warping & encoding totality")
-    idx = 0
-    while True:
-        ret, frame = cap.read()
-        if not ret or idx >= len(centers):
+    pbar = tqdm(total=target_total_frames, desc="Warping & encoding totality (1x Real-Time)")
+    
+    current_src_idx = -1
+    current_frame = None
+
+    for out_i in range(target_total_frames):
+        src_idx = min(int(round((out_i / float(target_total_frames)) * (len(centers) - 1))), len(centers) - 1)
+        
+        while current_src_idx < src_idx:
+            ret, frame = cap.read()
+            if not ret:
+                break
+            current_frame = frame
+            current_src_idx += 1
+
+        if current_frame is None:
             break
-        c_x, c_y = centers[idx]
+
+        c_x, c_y = centers[src_idx]
         dx = cx_target - c_x + (off_x * scale_factor)
         dy = cy_target - c_y + (off_y * scale_factor)
         M = np.array([[1.0, 0.0, dx], [0.0, 1.0, dy]], dtype=np.float32)
-        warped = cv2.warpAffine(frame, M, (master_w, master_h), flags=cv2.INTER_LANCZOS4, borderMode=cv2.BORDER_CONSTANT, borderValue=(0, 0, 0))
+        warped = cv2.warpAffine(current_frame, M, (master_w, master_h), flags=cv2.INTER_LANCZOS4, borderMode=cv2.BORDER_CONSTANT, borderValue=(0, 0, 0))
         proc.stdin.write(warped.tobytes())
-        idx += 1
         pbar.update(1)
 
     cap.release()
@@ -747,8 +777,8 @@ def process_composite_asset(
     scales and pads it to master project canvas, and produces a video clip of duration_s.
     """
     layout = asset_meta.get('layout', 'sinusoid')
-    comp_w = asset_meta.get('comp_width', 3840)
-    comp_h = asset_meta.get('comp_height', 3840)
+    comp_w = asset_meta.get('comp_width') or master_w
+    comp_h = asset_meta.get('comp_height') or master_h
     duration_s = asset_meta.get('duration', 10.0)
     idx = asset_meta.get('index', 6)
 
@@ -763,11 +793,17 @@ def process_composite_asset(
     if composite_img is None:
         raise RuntimeError(f"Failed to read composite artwork from {composite_png}")
 
-    # 2. Save named composite artwork image artifacts
+    # 2. Save named composite artwork image artifacts and metadata JSON
     png_path = os.path.join(out_dir, f"composite_artwork_{idx}_{layout}.png")
     jpg_path = os.path.join(out_dir, f"composite_artwork_{idx}_{layout}.jpg")
+    json_src = os.path.splitext(composite_png)[0] + ".json"
+    json_dst = os.path.splitext(out_path)[0] + ".json"
     cv2.imwrite(png_path, composite_img, [cv2.IMWRITE_PNG_COMPRESSION, 3])
     cv2.imwrite(jpg_path, composite_img, [cv2.IMWRITE_JPEG_QUALITY, 98])
+    if os.path.exists(json_src):
+        import shutil
+        shutil.copy2(json_src, json_dst)
+        shutil.copy2(json_src, os.path.join(out_dir, f"composite_artwork_{idx}_{layout}.json"))
 
     # 3. Scale and pad to master project resolution
     canvas_frame = scale_and_pad_to_canvas(composite_img, master_w, master_h)
@@ -965,17 +1001,22 @@ def assemble_master_film(
 # ─────────────────────────────────────────────────────────────────────────────
 
 def run_coc_pipeline(
-    in_dir: str = "010_in",
-    out_dir: str = "040_out",
-    output_film: str = "040_out/full_eclipse.mp4",
-    transition_type: str = "fade_to_black",
-    freeze_before: float = 1.0,
-    fade_out: float = 0.5,
-    black_duration: float = 0.0,
-    fade_in: float = 0.5,
-    fade_duration: float = 1.0,
-    freeze_after: float = 1.0,
-    force_all: bool = False
+    in_dir="010_in",
+    out_dir="040_out",
+    output_film="040_out/full_eclipse.mp4",
+    transition_type="fade_to_black",
+    freeze_before=1.0,
+    fade_out=0.5,
+    black_duration=0.0,
+    fade_in=0.5,
+    fade_duration=1.0,
+    freeze_after=1.0,
+    force_all=False,
+    no_subtitles=False,
+    no_title=False,
+    title_duration=5.0,
+    date_str=None,
+    force_db=False
 ):
     """
     Executes the end-to-end CoC Pipeline with exact astronomical limb tracking.
@@ -997,6 +1038,7 @@ def run_coc_pipeline(
     print(f"  Input Directory    : {in_dir}")
     print(f"  Master Resolution  : {master_w}x{master_h} px (Auto-detected)")
     print(f"  Optical Center     : ({cx_opt:.1f}, {cy_opt:.1f})")
+    print(f"  Include Title Card : {not no_title} ({title_duration}s)")
     print(f"  Discovered Assets  : {len(assets)} items")
     for a in assets:
         print(f"    [{a['index']:02d}] {a['raw_name']:30s} -> Type: {a['asset_type']} (Duration: {a['duration']}s)")
@@ -1007,6 +1049,24 @@ def run_coc_pipeline(
 
     processed_clip_paths = []
 
+    # 1. Opening Title Card (Clip 00)
+    if not no_title:
+        out_title_path = os.path.join(out_dir, "00_title.mp4")
+        print(f"Generating Opening Title Card [00]: {out_title_path} ({title_duration}s)...")
+        if not os.path.exists(out_title_path) or force_all:
+            ctc.generate_title_card(
+                date_str=date_str,
+                width=master_w,
+                height=master_h,
+                duration_s=title_duration,
+                out_dir=out_dir,
+                output_mp4=out_title_path,
+                force_db=force_db
+            )
+        processed_clip_paths.append(out_title_path)
+        print()
+
+    # 2. Process all CoC assets in order
     for a in assets:
         idx = a['index']
         a_type = a['asset_type']
@@ -1104,6 +1164,24 @@ def run_coc_pipeline(
         fps=30.0, crf=16, preset="fast"
     )
 
+    # Invoke standalone subtitle generator as final step
+    if not no_subtitles:
+        srt_master_path = os.path.splitext(output_film)[0] + ".srt"
+        ges.generate_eclipse_subtitles_pipeline(
+            video_path=output_film,
+            output_srt_path=srt_master_path,
+            interval_s=5.0,
+            include_phase=True,
+            lang="both",
+            embed=True,
+            date_str=date_str,
+            include_title=not no_title,
+            title_duration=title_duration,
+            force_db=force_db,
+            in_dir=in_dir,
+            out_dir=out_dir
+        )
+
 
 # ─────────────────────────────────────────────────────────────────────────────
 # CLI INTERFACE
@@ -1131,6 +1209,16 @@ if __name__ == "__main__":
                         help="Duration in seconds of crossfade dissolve (default: 1.0s)")
     parser.add_argument("--freeze-after", type=float, default=1.0,
                         help="Duration in seconds of freeze on the first frame of subsequent clip (default: 1.0s)")
+    parser.add_argument("--no-subtitles", action="store_true",
+                        help="Skip automatic subtitle generation and QuickTime embedding")
+    parser.add_argument("--no-title", action="store_true",
+                        help="Skip automatic opening title card generation and concatenation")
+    parser.add_argument("--title-duration", type=float, default=5.0,
+                        help="Duration in seconds of opening title card (default: 5.0s)")
+    parser.add_argument("--date", "-d", type=str, default=None,
+                        help="Eclipse date YYYY-MM-DD (default: auto-detect)")
+    parser.add_argument("--force-db", action="store_true",
+                        help="Force refresh eclipse database")
     parser.add_argument("--force-all", action="store_true",
                         help="Force re-processing and re-stabilizing all assets from scratch")
     args = parser.parse_args()
@@ -1146,5 +1234,10 @@ if __name__ == "__main__":
         fade_in=args.fade_in,
         fade_duration=args.fade_duration,
         freeze_after=args.freeze_after,
-        force_all=args.force_all
+        force_all=args.force_all,
+        no_subtitles=args.no_subtitles,
+        no_title=args.no_title,
+        title_duration=args.title_duration,
+        force_db=args.force_db,
+        date_str=args.date
     )

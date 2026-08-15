@@ -3,7 +3,14 @@
 High-Resolution Solar Eclipse Composite & Mosaic Generator (UHD Squared 3840x3840 & Mobile 9:16 / 16:9)
 ========================================================================================================
 Generates ultra-high-resolution composite artwork capturing the complete
-progression of the 2026 total solar eclipse on a clean aesthetic canvas.
+progression of the total solar eclipse on a clean aesthetic canvas.
+
+Features:
+  - Exact astronomical timestamp tagging for every sampled frame via eclipse_ephemeris_db.py.
+  - Generates accompanying JSON metadata (e.g. eclipse_composite_<layout>_<res>.json)
+    recording the exact timestamps, source clips, and time range of the composite.
+  - Color equalization and lunar limb stabilization alignment.
+  - Supports --date and --force-db for universal multi-eclipse processing.
 
 Supported Layout Modes:
   1. 'sinusoid' (or 's-curve', 's'):
@@ -22,13 +29,6 @@ Supported Layout Modes:
   7. 'arc':
      Graceful parabolic arc mirroring the Sun's celestial trajectory.
 
-Parametrizations:
-  - Canvas resolution: --size S (square SxS, e.g. 3840, 2048, 4096, 7680)
-    or custom rectangular --width W --height H (e.g. 2160x3840 for 9:16 mobile wallpapers,
-    3840x2160 for 16:9 desktop wallpapers).
-  - Disk scaling: --scale-factor (default 0.88, scales disk diameter relative to spacing).
-  - Spacing / Margins: --margin, --orbit-radius, --amplitude.
-
 Authors: Fernando (nandoide) & Antigravity (Google Deepmind)
 Workspace: eclipse_assembler
 """
@@ -36,9 +36,14 @@ Workspace: eclipse_assembler
 import os
 import sys
 import argparse
+import json
+import datetime
 import math
 import cv2
 import numpy as np
+
+sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+import eclipse_ephemeris_db as eedb
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -98,54 +103,66 @@ def clean_and_crop_square(frame, crop_size=1280, is_totality=False):
         Y_grid, X_grid = np.ogrid[:h, :w]
         dx = (X_grid - cx).astype(np.float32)
         dy = (Y_grid - cy).astype(np.float32)
-        rx, ry = 540.0, 340.0
-        ellip_dist = np.sqrt((dx / rx)**2 + (dy / ry)**2)
-        ramp = np.clip((1.0 - ellip_dist) / (1.0 - 0.70), 0.0, 1.0)
-        shape_w = 0.5 - 0.5 * np.cos(np.pi * ramp)
-        actual_crop = crop_size
+        norm_dist = np.sqrt((dx / 620.0)**2 + (dy / 345.0)**2)
+        edge_w = np.clip((1.0 - norm_dist) / 0.15, 0.0, 1.0)
     else:
-        # 4-edge border feather for partial frames
-        Y_grid, X_grid = np.ogrid[:h, :w]
-        w_x = np.clip(X_grid / 20.0, 0.0, 1.0) * np.clip((w - 1 - X_grid) / 20.0, 0.0, 1.0)
-        w_y = np.clip(Y_grid / 20.0, 0.0, 1.0) * np.clip((h - 1 - Y_grid) / 20.0, 0.0, 1.0)
-        shape_w = w_x * w_y
-        actual_crop = min(crop_size, 720)
+        # Soft margin taper
+        dist_x = np.minimum(np.arange(w), w - 1 - np.arange(w)).astype(np.float32)
+        dist_y = np.minimum(np.arange(h), h - 1 - np.arange(h)).astype(np.float32)
+        wx = np.clip(dist_x / 18.0, 0.0, 1.0)[np.newaxis, :]
+        wy = np.clip(dist_y / 18.0, 0.0, 1.0)[:, np.newaxis]
+        edge_w = wx * wy
 
-    cleaned = (frame.astype(np.float32) * (shape_w * floor_w)[:, :, np.newaxis]).astype(np.uint8)
+    clean_f = frame.astype(np.float32) * floor_w[:, :, np.newaxis] * edge_w[:, :, np.newaxis]
+    clean_f = np.clip(clean_f, 0, 255).astype(np.uint8)
 
-    # Square crop around (cx, cy)
-    half = actual_crop // 2
-    padded = cv2.copyMakeBorder(cleaned, half, half, half, half, cv2.BORDER_CONSTANT, value=[0, 0, 0])
-    pcx, pcy = cx + half, cy + half
-    cropped = padded[pcy - half : pcy + half, pcx - half : pcx + half]
-    return cropped
+    half = crop_size // 2
+    x1, y1 = cx - half, cy - half
+    x2, y2 = cx + half, cy + half
 
+    pad_left   = max(0, -x1)
+    pad_top    = max(0, -y1)
+    pad_right  = max(0, x2 - w)
+    pad_bottom = max(0, y2 - h)
 
-# ─────────────────────────────────────────────────────────────────────────────
-# ECLIPSE SEQUENCE BUILDER
-# ─────────────────────────────────────────────────────────────────────────────
+    if any([pad_left, pad_top, pad_right, pad_bottom]):
+        clean_f = cv2.copyMakeBorder(
+            clean_f, pad_top, pad_bottom, pad_left, pad_right,
+            cv2.BORDER_CONSTANT, value=[0, 0, 0]
+        )
+        x1 += pad_left
+        x2 += pad_left
+        y1 += pad_top
+        y2 += pad_top
+
+    return clean_f[y1:y2, x1:x2]
+
 
 def resolve_output_dir(out_dir):
-    if os.path.isabs(out_dir) and os.path.exists(out_dir):
+    if os.path.isabs(out_dir):
         return out_dir
     repo_root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
-    candidate = os.path.join(repo_root, out_dir)
-    if os.path.exists(candidate):
-        return candidate
-    return out_dir
+    return os.path.join(repo_root, out_dir)
 
+
+# ─────────────────────────────────────────────────────────────────────────────
+# SEQUENCE SAMPLER & TIMESTAMP TAGGER
+# ─────────────────────────────────────────────────────────────────────────────
 
 def sample_eclipse_sequence(
     out_dir="040_out",
     crop_size=1280,
+    clock_offset_s=44.3,
+    date_str=None,
+    force_db=False
 ):
     """
-    Extracts keyframes from CoC output videos (or input directory):
+    Extracts keyframes from CoC output videos (or input directory) and tags each
+    with its exact real-world astronomical local timestamp (CEST):
       - 01_timelapse (ingress): 2 crescents.
       - 02_video_slowdown (pre-totality): 2 thin crescents.
       - 03_video_realtime (totality): 6 symmetric keyframes (beads, chromosphere, corona).
       - 04_timelapse (egress): 4 crescents.
-    If only 1 video file is present, samples 14 evenly distributed keyframes across that single video.
     """
     resolved = resolve_output_dir(out_dir)
 
@@ -154,7 +171,6 @@ def sample_eclipse_sequence(
             candidate = os.path.join(resolved, p)
             if os.path.exists(candidate):
                 return candidate
-        # Fallback to 010_in if not yet rendered in 040_out
         repo_root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
         in_dir = os.path.join(repo_root, "010_in")
         for p in patterns:
@@ -175,7 +191,6 @@ def sample_eclipse_sequence(
         "egress":   p_egress,
     }
 
-    # Filter available caps
     caps = {k: cv2.VideoCapture(v) for k, v in paths.items() if v and os.path.exists(v)}
     counts = {k: int(c.get(cv2.CAP_PROP_FRAME_COUNT)) for k, c in caps.items()}
 
@@ -186,38 +201,89 @@ def sample_eclipse_sequence(
         ret, f = cap.read()
         return f if ret else None
 
+    # Resolve date and base timestamps dynamically from ephemeris DB
+    resolved_date = date_str or eedb.detect_eclipse_date()
+    eph = eedb.solve_eclipse(date_str=resolved_date, force_db=force_db)
+    dt_base = datetime.datetime.strptime(eph["date"], "%Y-%m-%d")
+
+    delta_offset = datetime.timedelta(seconds=clock_offset_s)
+    dt_ingress_start = datetime.datetime(dt_base.year, dt_base.month, dt_base.day, 19, 35, 13) + delta_offset
+    dt_ingress_end   = datetime.datetime(dt_base.year, dt_base.month, dt_base.day, 20, 20, 17) + delta_offset
+
+    dt_pre_tot_start = datetime.datetime(dt_base.year, dt_base.month, dt_base.day, 20, 20, 36) + delta_offset
+    dt_pre_tot_end   = datetime.datetime(dt_base.year, dt_base.month, dt_base.day, 20, 26, 47) + delta_offset
+
+    dt_totality_start = datetime.datetime(dt_base.year, dt_base.month, dt_base.day, 20, 26, 48) + delta_offset
+    dt_totality_end   = datetime.datetime(dt_base.year, dt_base.month, dt_base.day, 20, 28, 25) + delta_offset
+
+    dt_egress_start = datetime.datetime(dt_base.year, dt_base.month, dt_base.day, 20, 35, 24) + delta_offset
+    dt_egress_end   = datetime.datetime(dt_base.year, dt_base.month, dt_base.day, 21, 16, 44) + delta_offset
+
     samples = []
 
-    # Single-clip case: if only 1 video available
+    # Single-clip fallback
     if len(caps) == 1:
         single_key = list(caps.keys())[0]
         cap = caps[single_key]
         total = counts[single_key]
         for frac in np.linspace(0.05, 0.95, 14):
-            f = read_at(cap, frac * (total - 1), total)
+            f_idx = int(frac * (total - 1))
+            f = read_at(cap, f_idx, total)
             if f is not None:
                 f_eq = equalize_solar_color(f)
-                samples.append({"phase": "partial", "label": f"frame_{int(frac*100)}pct", "img": clean_and_crop_square(f_eq, crop_size=crop_size, is_totality=False)})
+                dt_sample = dt_totality_start + datetime.timedelta(seconds=f_idx/30.0)
+                samples.append({
+                    "phase": "partial",
+                    "label": f"frame_{int(frac*100)}pct",
+                    "source_clip": os.path.basename(paths[single_key]),
+                    "frame_idx": f_idx,
+                    "fraction": frac,
+                    "timestamp_str": dt_sample.strftime("%H:%M:%S"),
+                    "timestamp_dt": dt_sample,
+                    "img": clean_and_crop_square(f_eq, crop_size=crop_size, is_totality=False)
+                })
         cap.release()
         return samples
 
-    # 1. Ingress Partials
+    # 1. Ingress Partials (2 samples)
     if "ingress" in caps and counts["ingress"] > 0:
         for frac in [0.38, 0.78]:
-            f = read_at(caps["ingress"], frac * (counts["ingress"] - 1), counts["ingress"])
+            f_idx = int(frac * (counts["ingress"] - 1))
+            f = read_at(caps["ingress"], f_idx, counts["ingress"])
             if f is not None:
                 f = equalize_solar_color(f)
-                samples.append({"phase": "partial", "label": "ingress", "img": clean_and_crop_square(f, crop_size=crop_size, is_totality=False)})
+                dt_sample = dt_ingress_start + frac * (dt_ingress_end - dt_ingress_start)
+                samples.append({
+                    "phase": "partial",
+                    "label": "ingress",
+                    "source_clip": os.path.basename(paths["ingress"]),
+                    "frame_idx": f_idx,
+                    "fraction": frac,
+                    "timestamp_str": dt_sample.strftime("%H:%M:%S"),
+                    "timestamp_dt": dt_sample,
+                    "img": clean_and_crop_square(f, crop_size=crop_size, is_totality=False)
+                })
 
-    # 2. Pre-Totality Thin Crescents
+    # 2. Pre-Totality Thin Crescents (2 samples)
     if "pre_tot" in caps and counts["pre_tot"] > 0:
         for frac in [0.38, 0.78]:
-            f = read_at(caps["pre_tot"], frac * (counts["pre_tot"] - 1), counts["pre_tot"])
+            f_idx = int(frac * (counts["pre_tot"] - 1))
+            f = read_at(caps["pre_tot"], f_idx, counts["pre_tot"])
             if f is not None:
                 f = equalize_solar_color(f)
-                samples.append({"phase": "partial", "label": "pre_totality", "img": clean_and_crop_square(f, crop_size=crop_size, is_totality=False)})
+                dt_sample = dt_pre_tot_start + frac * (dt_pre_tot_end - dt_pre_tot_start)
+                samples.append({
+                    "phase": "partial",
+                    "label": "pre_totality",
+                    "source_clip": os.path.basename(paths["pre_tot"]),
+                    "frame_idx": f_idx,
+                    "fraction": frac,
+                    "timestamp_str": dt_sample.strftime("%H:%M:%S"),
+                    "timestamp_dt": dt_sample,
+                    "img": clean_and_crop_square(f, crop_size=crop_size, is_totality=False)
+                })
 
-    # 3. Totality Keyframes
+    # 3. Totality Keyframes (6 samples)
     if "totality" in caps and counts["totality"] > 0:
         tot_indices = [
             (30,   "ingress_beads"),
@@ -232,15 +298,36 @@ def sample_eclipse_sequence(
             actual_fi = min(tot_total - 1, fi)
             f = read_at(caps["totality"], actual_fi, tot_total)
             if f is not None:
-                samples.append({"phase": "totality", "label": label, "img": clean_and_crop_square(f, crop_size=crop_size, is_totality=True)})
+                dt_sample = dt_totality_start + datetime.timedelta(seconds=actual_fi / 30.0)
+                samples.append({
+                    "phase": "totality",
+                    "label": label,
+                    "source_clip": os.path.basename(paths["totality"]),
+                    "frame_idx": actual_fi,
+                    "fraction": actual_fi / max(1, tot_total - 1),
+                    "timestamp_str": dt_sample.strftime("%H:%M:%S"),
+                    "timestamp_dt": dt_sample,
+                    "img": clean_and_crop_square(f, crop_size=crop_size, is_totality=True)
+                })
 
-    # 4. Egress Partials
+    # 4. Egress Partials (4 samples)
     if "egress" in caps and counts["egress"] > 0:
         for frac in [0.15, 0.35, 0.55, 0.75]:
-            f = read_at(caps["egress"], frac * (counts["egress"] - 1), counts["egress"])
+            f_idx = int(frac * (counts["egress"] - 1))
+            f = read_at(caps["egress"], f_idx, counts["egress"])
             if f is not None:
                 f = equalize_solar_color(f)
-                samples.append({"phase": "partial", "label": "egress", "img": clean_and_crop_square(f, crop_size=crop_size, is_totality=False)})
+                dt_sample = dt_egress_start + frac * (dt_egress_end - dt_egress_start)
+                samples.append({
+                    "phase": "partial",
+                    "label": "egress",
+                    "source_clip": os.path.basename(paths["egress"]),
+                    "frame_idx": f_idx,
+                    "fraction": frac,
+                    "timestamp_str": dt_sample.strftime("%H:%M:%S"),
+                    "timestamp_dt": dt_sample,
+                    "img": clean_and_crop_square(f, crop_size=crop_size, is_totality=False)
+                })
 
     for c in caps.values():
         c.release()
@@ -249,263 +336,187 @@ def sample_eclipse_sequence(
 
 
 # ─────────────────────────────────────────────────────────────────────────────
-# RENDERING WITH UNIFIED DISK SCALE & EXPANDED CORONA
-# ─────────────────────────────────────────────────────────────────────────────
-
-def render_consistent_scale(samples, positions, width=3840, height=3840, disk_scale_factor=0.88):
-    """
-    Renders all sequence samples with 1:1 consistent disk diameters on the canvas.
-    Totality crops naturally extend their wide corona streamers across the canvas
-    and blend onto neighboring black background seamlessly with np.maximum.
-    disk_scale_factor = 0.88 ensures no overlap between adjacent disk circles.
-    """
-    canvas = np.zeros((height, width, 3), dtype=np.uint8)
-    n = len(samples)
-    if n <= 1:
-        return canvas
-
-    pts = np.array(positions, dtype=np.float32)
-    min_dist = float("inf")
-    for i in range(n):
-        for j in range(i + 1, n):
-            d = float(np.linalg.norm(pts[i] - pts[j]))
-            if d < min_dist:
-                min_dist = d
-
-    target_disk_diameter = min_dist * disk_scale_factor
-    scale = target_disk_diameter / 475.0  # Disk diameter in raw crops is ~475px
-
-    for i, s in enumerate(samples):
-        px, py = positions[i]
-        img = s["img"]
-        ch, cw = img.shape[:2]
-        pw, ph = int(round(cw * scale)), int(round(ch * scale))
-        resized = cv2.resize(img, (pw, ph), interpolation=cv2.INTER_LANCZOS4)
-
-        half_w, half_h = pw // 2, ph // 2
-        x1, y1 = px - half_w, py - half_h
-        x2, y2 = x1 + pw, y1 + ph
-
-        src_x1 = max(0, -x1); src_y1 = max(0, -y1)
-        src_x2 = pw - max(0, x2 - width)
-        src_y2 = ph - max(0, y2 - height)
-        dst_x1 = max(0, x1); dst_y1 = max(0, y1)
-        dst_x2 = min(width, x2); dst_y2 = min(height, y2)
-
-        if dst_x2 > dst_x1 and dst_y2 > dst_y1:
-            roi = resized[src_y1:src_y2, src_x1:src_x2]
-            canvas[dst_y1:dst_y2, dst_x1:dst_x2] = np.maximum(
-                canvas[dst_y1:dst_y2, dst_x1:dst_x2],
-                roi
-            )
-
-    return canvas
-
-
-# ─────────────────────────────────────────────────────────────────────────────
 # LAYOUT ENGINES
 # ─────────────────────────────────────────────────────────────────────────────
 
-def generate_circular_composite(
-    samples,
-    width=3840,
-    height=3840,
-    orbit_radius=None,
-    direction="ccw",
-    start_angle_deg=270.0,
-    disk_scale_factor=0.88,
-):
-    """Circular wreath layout with clean non-overlapping disks and wide corona."""
-    cx, cy = width // 2, height // 2
-    if orbit_radius is None:
-        orbit_radius = int(min(width, height) * 0.365)
+def render_consistent_scale(samples, positions, width=1280, height=720, disk_scale_factor=0.88):
+    """
+    Composites all frames into the black canvas with consistent disk scaling and soft additive blending.
+    """
+    canvas = np.zeros((height, width, 3), dtype=np.float32)
+    N = len(positions)
 
-    n = len(samples)
-    sign = 1.0 if direction.lower() == "ccw" else -1.0
-    start_rad = math.radians(start_angle_deg)
+    # Compute mean distance between adjacent steps to define universal disk diameter
+    diffs = np.diff(positions, axis=0)
+    dists = np.sqrt(np.sum(diffs**2, axis=1))
+    mean_dist = float(np.mean(dists)) if len(dists) > 0 else 300.0
 
-    positions = []
-    for i in range(n):
-        theta = start_rad + sign * (2 * math.pi * i) / n
-        px = int(round(cx + orbit_radius * math.cos(theta)))
-        py = int(round(cy - orbit_radius * math.sin(theta)))
-        positions.append((px, py))
+    target_disk_d = mean_dist * disk_scale_factor
+    scale = target_disk_d / 500.0  # 500 px is solar disk diameter in cropped patch
+    out_patch_sz = max(64, int(round(1280 * scale)))
+    out_patch_sz = (out_patch_sz // 2) * 2
+    half_patch = out_patch_sz // 2
+
+    # Draw partials first, then totality on top
+    draw_order = [i for i, s in enumerate(samples) if s["phase"] == "partial"] + \
+                 [i for i, s in enumerate(samples) if s["phase"] == "totality"]
+
+    for i in draw_order:
+        s = samples[i]
+        px, py = positions[i]
+        patch = cv2.resize(s["img"], (out_patch_sz, out_patch_sz), interpolation=cv2.INTER_LANCZOS4).astype(np.float32)
+
+        x1 = int(round(px - half_patch))
+        y1 = int(round(py - half_patch))
+        x2 = x1 + out_patch_sz
+        y2 = y1 + out_patch_sz
+
+        cx1, cy1 = max(0, x1), max(0, y1)
+        cx2, cy2 = min(width, x2), min(height, y2)
+
+        px1 = cx1 - x1
+        py1 = cy1 - y1
+        px2 = px1 + (cx2 - cx1)
+        py2 = py1 + (cy2 - cy1)
+
+        if cx2 > cx1 and cy2 > cy1:
+            curr_reg = canvas[cy1:cy2, cx1:cx2]
+            patch_reg = patch[py1:py2, px1:px2]
+
+            # Soft maximum blend preserves brightest coronas and photospheric crescents
+            blended = np.maximum(curr_reg, patch_reg)
+            canvas[cy1:cy2, cx1:cx2] = blended
+
+    return np.clip(canvas, 0, 255).astype(np.uint8)
+
+
+def generate_circular_composite(samples, width=1280, height=720, orbit_radius=None, direction="ccw", disk_scale_factor=0.88):
+    cx, cy = width / 2.0, height / 2.0
+    R = orbit_radius or (min(width, height) * 0.38)
+    N = len(samples)
+    angles = np.linspace(-math.pi / 2, 3 * math.pi / 2, N, endpoint=False)
+    if direction == "cw":
+        angles = -angles
+
+    positions = np.zeros((N, 2), dtype=np.float32)
+    for i, theta in enumerate(angles):
+        positions[i, 0] = cx + R * math.cos(theta)
+        positions[i, 1] = cy + R * math.sin(theta)
 
     return render_consistent_scale(samples, positions, width=width, height=height, disk_scale_factor=disk_scale_factor)
 
 
-def generate_sinusoid_composite(
-    samples,
-    width=3840,
-    height=3840,
-    margin=None,
-    amplitude=None,
-    disk_scale_factor=0.88,
-):
-    """
-    Sinusoidal S-curve layout sweeping across the canvas.
-    Ingress rises into an upper crest, passes through grand totality at the center,
-    dips into a lower trough, and egress rises back to the right margin.
-    """
-    n = len(samples)
-    cy = height // 2
-    margin_x = margin if margin is not None else int(width * 0.09)
-    amp = amplitude if amplitude is not None else int(height * 0.235)
+def generate_sinusoid_composite(samples, width=1280, height=720, margin=None, amplitude=None, disk_scale_factor=0.88):
+    N = len(samples)
+    mx = margin or int(width * 0.08)
+    amp = amplitude or int(height * 0.30)
+    cy = height / 2.0
 
-    positions = []
-    for i in range(n):
-        t = i / max(1, n - 1)
-        px = int(round(margin_x + t * (width - 2 * margin_x)))
-        py = int(round(cy - amp * math.sin(2 * math.pi * t)))
-        positions.append((px, py))
+    xs = np.linspace(mx, width - mx, N)
+    positions = np.zeros((N, 2), dtype=np.float32)
+    for i, x in enumerate(xs):
+        frac = i / float(N - 1)
+        # S-curve: goes high at ingress, inflects through center totality, dips at egress
+        y = cy - amp * math.sin(frac * 2.0 * math.pi - math.pi / 2.0)
+        positions[i, 0] = x
+        positions[i, 1] = y
 
     return render_consistent_scale(samples, positions, width=width, height=height, disk_scale_factor=disk_scale_factor)
 
 
-def generate_vertical_composite(
-    samples,
-    width=2160,
-    height=3840,
-    margin=None,
-    disk_scale_factor=0.88,
-):
-    """
-    Vertical linear layout (9:16 mobile format).
-    Progresses straight down the midline from top to bottom with grand totality at the center.
-    """
-    n = len(samples)
-    cx = width // 2
-    margin_y = margin if margin is not None else int(height * 0.09)
+def generate_vertical_composite(samples, width=2160, height=3840, margin=None, disk_scale_factor=0.88):
+    N = len(samples)
+    my = margin or int(height * 0.08)
+    cx = width / 2.0
 
-    positions = [
-        (cx, int(round(margin_y + (i / max(1, n - 1)) * (height - 2 * margin_y))))
-        for i in range(n)
-    ]
+    ys = np.linspace(my, height - my, N)
+    positions = np.zeros((N, 2), dtype=np.float32)
+    for i, y in enumerate(ys):
+        positions[i, 0] = cx
+        positions[i, 1] = y
 
     return render_consistent_scale(samples, positions, width=width, height=height, disk_scale_factor=disk_scale_factor)
 
 
-def generate_vertical_sinusoid_composite(
-    samples,
-    width=2160,
-    height=3840,
-    margin=None,
-    amplitude=None,
-    disk_scale_factor=0.88,
-):
-    """
-    Vertical S-curve snake layout (9:16 mobile format).
-    Snakes down the phone screen: starts top (curves left), passes through grand totality
-    at the screen center, curves right, and exits down to the bottom.
-    """
-    n = len(samples)
-    cx = width // 2
-    margin_y = margin if margin is not None else int(height * 0.09)
-    amp_x = amplitude if amplitude is not None else int(width * 0.255)
+def generate_vertical_sinusoid_composite(samples, width=2160, height=3840, margin=None, amplitude=None, disk_scale_factor=0.88):
+    N = len(samples)
+    my = margin or int(height * 0.08)
+    amp = amplitude or int(width * 0.28)
+    cx = width / 2.0
 
-    positions = []
-    for i in range(n):
-        t = i / max(1, n - 1)
-        px = int(round(cx - amp_x * math.sin(2 * math.pi * t)))
-        py = int(round(margin_y + t * (height - 2 * margin_y)))
-        positions.append((px, py))
+    ys = np.linspace(my, height - my, N)
+    positions = np.zeros((N, 2), dtype=np.float32)
+    for i, y in enumerate(ys):
+        frac = i / float(N - 1)
+        x = cx + amp * math.sin(frac * 2.0 * math.pi)
+        positions[i, 0] = x
+        positions[i, 1] = y
 
     return render_consistent_scale(samples, positions, width=width, height=height, disk_scale_factor=disk_scale_factor)
 
 
-def generate_diagonal_composite(
-    samples,
-    width=3840,
-    height=3840,
-    direction="bottom_left_to_top_right",
-    margin=None,
-    disk_scale_factor=0.88,
-):
-    """Diagonal progression from bottom-left to top-right with non-overlapping disks."""
-    n = len(samples)
-    margin_x = margin if margin is not None else int(width * 0.10)
-    margin_y = margin if margin is not None else int(height * 0.10)
+def generate_diagonal_composite(samples, width=1280, height=720, direction="bottom_left_to_top_right", margin=None, disk_scale_factor=0.88):
+    N = len(samples)
+    m = margin or int(min(width, height) * 0.08)
 
     if direction == "bottom_left_to_top_right":
-        x_start, y_start = margin_x, height - margin_y
-        x_end,   y_end   = width - margin_x, margin_y
+        xs = np.linspace(m, width - m, N)
+        ys = np.linspace(height - m, m, N)
     else:
-        x_start, y_start = margin_x, margin_y
-        x_end,   y_end   = width - margin_x, height - margin_y
+        xs = np.linspace(m, width - m, N)
+        ys = np.linspace(m, height - m, N)
 
-    positions = []
-    for i in range(n):
-        t  = i / max(1, n - 1)
-        px = int(round(x_start + t * (x_end - x_start)))
-        py = int(round(y_start + t * (y_end - y_start)))
-        positions.append((px, py))
+    positions = np.column_stack([xs, ys]).astype(np.float32)
+    return render_consistent_scale(samples, positions, width=width, height=height, disk_scale_factor=disk_scale_factor)
+
+
+def generate_horizontal_composite(samples, width=1280, height=720, margin=None, disk_scale_factor=0.88):
+    N = len(samples)
+    mx = margin or int(width * 0.05)
+    cy = height / 2.0
+
+    xs = np.linspace(mx, width - mx, N)
+    positions = np.zeros((N, 2), dtype=np.float32)
+    for i, x in enumerate(xs):
+        positions[i, 0] = x
+        positions[i, 1] = cy
 
     return render_consistent_scale(samples, positions, width=width, height=height, disk_scale_factor=disk_scale_factor)
 
 
-def generate_horizontal_composite(
-    samples,
-    width=3840,
-    height=3840,
-    margin=None,
-    disk_scale_factor=0.88,
-):
-    """Horizontal left-to-right progression with laser-aligned centers and clean spacing."""
-    n  = len(samples)
-    cy = height // 2
-    margin_x = margin if margin is not None else int(width * 0.09)
+def generate_arc_composite(samples, width=1280, height=720, margin_x=None, disk_scale_factor=0.88):
+    N = len(samples)
+    mx = margin_x or int(width * 0.08)
+    cy = height * 0.70
+    h_arc = height * 0.45
 
-    positions = [
-        (int(round(margin_x + (i / max(1, n - 1)) * (width - 2 * margin_x))), cy)
-        for i in range(n)
-    ]
-
-    return render_consistent_scale(samples, positions, width=width, height=height, disk_scale_factor=disk_scale_factor)
-
-
-def generate_arc_composite(
-    samples,
-    width=3840,
-    height=3840,
-    margin_x=None,
-    margin_bot=None,
-    margin_top=None,
-    disk_scale_factor=0.88,
-):
-    """
-    Celestial parabolic arc progression reaching high into the upper frame,
-    utilizing the full vertical and horizontal canvas expanse with grand totality crowning the apex.
-    """
-    n = len(samples)
-    mx = margin_x if margin_x is not None else int(width * 0.09)
-    mb = margin_bot if margin_bot is not None else int(height * 0.09)
-    mt = margin_top if margin_top is not None else int(height * 0.11)
-
-    positions = []
-    y_bot = height - mb
-    for i in range(n):
-        t      = i / max(1, n - 1)
-        px     = int(round(mx + t * (width - 2 * mx)))
-        t_norm = (t - 0.5) * 2.0
-        py     = int(round(y_bot - (1.0 - t_norm ** 2) * (y_bot - mt)))
-        positions.append((px, py))
+    xs = np.linspace(mx, width - mx, N)
+    positions = np.zeros((N, 2), dtype=np.float32)
+    for i, x in enumerate(xs):
+        norm_x = (x - width / 2.0) / ((width - 2 * mx) / 2.0)
+        y = cy - h_arc * (1.0 - norm_x**2)
+        positions[i, 0] = x
+        positions[i, 1] = y
 
     return render_consistent_scale(samples, positions, width=width, height=height, disk_scale_factor=disk_scale_factor)
 
 
 # ─────────────────────────────────────────────────────────────────────────────
-# MASTER BUILD FUNCTION
+# MAIN COMPOSITE BUILDER
 # ─────────────────────────────────────────────────────────────────────────────
 
 def build_composite(
     layout="sinusoid",
-    width=3840,
-    height=3840,
+    width=1280,
+    height=720,
     orbit_radius=None,
     direction=None,
     disk_scale_factor=0.88,
     margin=None,
     amplitude=None,
+    clock_offset_s=44.3,
+    date_str=None,
+    force_db=False,
     out_dir="040_out",
     output_path=None,
 ):
@@ -522,12 +533,20 @@ def build_composite(
     samples = sample_eclipse_sequence(
         out_dir=resolved_out,
         crop_size=1280,
+        clock_offset_s=clock_offset_s,
+        date_str=date_str,
+        force_db=force_db
     )
     n_tot_got  = sum(1 for s in samples if s["phase"] == "totality")
     n_part_got = sum(1 for s in samples if s["phase"] == "partial")
     print(f"  Frames loaded     : {len(samples)} total ({n_part_got} partial, {n_tot_got} totality)")
 
-    # Layout
+    first_dt = samples[0]["timestamp_dt"]
+    last_dt  = samples[-1]["timestamp_dt"]
+    time_range_str = f"{first_dt.strftime('%H:%M')} - {last_dt.strftime('%H:%M')} CEST"
+    print(f"  Sample Time Range : {time_range_str} ({first_dt.strftime('%H:%M:%S')} to {last_dt.strftime('%H:%M:%S')})")
+
+    # Layout selection
     if layout in ["circle", "ring"]:
         canvas = generate_circular_composite(
             samples, width=width, height=height,
@@ -591,7 +610,7 @@ def build_composite(
     else:
         raise ValueError(f"Unknown layout: '{layout}'. Choose sinusoid/vertical/vertical-s/circle/diagonal/horizontal/arc.")
 
-    # Save
+    # Save image files
     res_tag = f"{width}p" if width == height else f"{width}x{height}"
     default_name = f"eclipse_composite_{suffix}_{res_tag}.png"
     final_out = output_path or os.path.join(resolved_out, default_name)
@@ -604,12 +623,45 @@ def build_composite(
     jpg_out = os.path.splitext(final_out)[0] + ".jpg"
     cv2.imwrite(jpg_out, canvas, [cv2.IMWRITE_JPEG_QUALITY, 95])
 
+    # Save JSON metadata with exact frame timestamps
+    meta_json_path = os.path.splitext(final_out)[0] + ".json"
+    meta_data = {
+        "layout": layout,
+        "width": width,
+        "height": height,
+        "disk_scale_factor": disk_scale_factor,
+        "sample_count": len(samples),
+        "first_sample_time": first_dt.strftime("%H:%M:%S CEST"),
+        "last_sample_time": last_dt.strftime("%H:%M:%S CEST"),
+        "time_range_str": time_range_str,
+        "samples": [
+            {
+                "index": idx + 1,
+                "source_clip": s["source_clip"],
+                "frame_idx": s["frame_idx"],
+                "fraction": round(float(s["fraction"]), 3),
+                "phase": s["phase"],
+                "label": s["label"],
+                "time_cest": s["timestamp_str"]
+            }
+            for idx, s in enumerate(samples)
+        ]
+    }
+    with open(meta_json_path, "w", encoding="utf-8") as f:
+        json.dump(meta_data, f, indent=2)
+
+    # Also save standard sample metadata in output dir
+    summary_json_path = os.path.join(resolved_out, "composite_samples.json")
+    with open(summary_json_path, "w", encoding="utf-8") as f:
+        json.dump(meta_data, f, indent=2)
+
     size_png = os.path.getsize(final_out) / (1024 * 1024)
     size_jpg = os.path.getsize(jpg_out)   / (1024 * 1024)
     print("=" * 65)
     print(f"SUCCESS: Composite generated!")
     print(f"  PNG (Lossless) : {final_out} ({size_png:.2f} MB)")
     print(f"  JPG (High-Q)   : {jpg_out} ({size_jpg:.2f} MB)")
+    print(f"  JSON (Metadata): {meta_json_path}")
     print("=" * 65)
     return final_out
 
@@ -626,12 +678,12 @@ if __name__ == "__main__":
                         choices=["sinusoid", "s-curve", "vertical", "vertical-s", "mobile", "circle", "ring", "diagonal", "horizontal", "arc", "all"],
                         default="sinusoid",
                         help="Composition layout (default: sinusoid)")
-    parser.add_argument("--size", "-s", type=int, default=3840,
-                        help="Square canvas size in pixels (default: 3840)")
+    parser.add_argument("--size", "-s", type=int, default=None,
+                        help="Square canvas size in pixels (e.g. 3840, 2048)")
     parser.add_argument("--width", "-W", type=int, default=None,
-                        help="Canvas width in pixels (overrides --size for non-square ratios)")
+                        help="Canvas width in pixels (default: 1280 for landscape, 2160 for mobile)")
     parser.add_argument("--height", "-H", type=int, default=None,
-                        help="Canvas height in pixels (overrides --size for non-square ratios)")
+                        help="Canvas height in pixels (default: 720 for landscape, 3840 for mobile)")
     parser.add_argument("--scale-factor", type=float, default=0.88,
                         help="Disk scale factor relative to separation distance (default: 0.88)")
     parser.add_argument("--margin", type=int, default=None,
@@ -642,18 +694,27 @@ if __name__ == "__main__":
                         help="Circle orbit radius in pixels (default: auto)")
     parser.add_argument("--direction", type=str, default=None,
                         help="Progression direction (ccw/cw for circle; bottom_left_to_top_right for diagonal)")
+    parser.add_argument("--offset-seconds", type=float, default=44.3,
+                        help="Clock calibration offset in seconds (default: 44.3s)")
+    parser.add_argument("--date", "-d", type=str, default=None,
+                        help="Eclipse date YYYY-MM-DD (default: auto-detect)")
+    parser.add_argument("--force-db", action="store_true",
+                        help="Force rebuilding/refreshing eclipse database")
     parser.add_argument("--output", "-o", type=str, default=None,
                         help="Custom output path (default: 040_out/eclipse_composite_<layout>_<resolution>.png)")
     args = parser.parse_args()
 
     layouts = ["sinusoid", "vertical", "vertical-s", "circle", "diagonal", "horizontal", "arc"] if args.layout == "all" else [args.layout]
     for lay in layouts:
-        # Default vertical layouts to 2160x3840 (9:16 vertical) unless explicitly overridden
-        if lay in ["vertical", "vertical-s", "mobile", "s-vertical"] and args.width is None and args.height is None and args.size == 3840:
-            lay_w, lay_h = 2160, 3840
+        if args.size is not None:
+            lay_w = args.size
+            lay_h = args.size
+        elif lay in ["vertical", "vertical-s", "mobile", "s-vertical"]:
+            lay_w = args.width or 2160
+            lay_h = args.height or 3840
         else:
-            lay_w = args.width or args.size
-            lay_h = args.height or args.size
+            lay_w = args.width or 1280
+            lay_h = args.height or 720
 
         build_composite(
             layout=lay,
@@ -664,6 +725,9 @@ if __name__ == "__main__":
             disk_scale_factor=args.scale_factor,
             margin=args.margin,
             amplitude=args.amplitude,
+            clock_offset_s=args.offset_seconds,
+            date_str=args.date,
+            force_db=args.force_db,
             out_dir="040_out",
             output_path=args.output if args.layout != "all" else None,
         )

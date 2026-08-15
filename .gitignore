@@ -15,6 +15,7 @@ venv/
 ENV/
 
 # Large media input/output directories & video files
+000_raw/
 010_in/
 040_out*/
 *.mp4
