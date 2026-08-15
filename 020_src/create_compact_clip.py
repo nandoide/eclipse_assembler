@@ -25,6 +25,41 @@ import numpy as np
 from tqdm import tqdm
 
 
+def stream_video_frames_pipe(in_path):
+    """
+    Memory-efficient generator that yields raw BGR frames sequentially from any video container.
+    """
+    cmd_probe = [
+        'ffprobe', '-v', 'error',
+        '-select_streams', 'v:0',
+        '-show_entries', 'stream=width,height',
+        '-of', 'csv=s=x:p=0',
+        in_path
+    ]
+    res = subprocess.run(cmd_probe, capture_output=True, text=True)
+    dims = res.stdout.strip().split('x')
+    w, h = int(dims[0]), int(dims[1])
+
+    cmd_stream = [
+        'ffmpeg', '-i', in_path,
+        '-f', 'image2pipe',
+        '-pix_fmt', 'bgr24',
+        '-vcodec', 'rawvideo',
+        '-'
+    ]
+    proc = subprocess.Popen(cmd_stream, stdout=subprocess.PIPE, stderr=subprocess.DEVNULL)
+
+    frame_size = w * h * 3
+    while True:
+        raw_bytes = proc.stdout.read(frame_size)
+        if len(raw_bytes) < frame_size:
+            break
+        yield np.frombuffer(raw_bytes, dtype=np.uint8).reshape((h, w, 3)), w, h
+
+    proc.stdout.close()
+    proc.wait()
+
+
 def generate_compact_eclipse(
     input_path: str = "040_out/full_eclipse.mp4",
     output_path: str = "040_out/full_eclipse_30s.mp4",
@@ -50,24 +85,35 @@ def generate_compact_eclipse(
         print(f"Error: Input video '{input_path}' not found.", file=sys.stderr)
         return
 
-    cap = cv2.VideoCapture(input_path)
-    total_in_frames = int(cap.get(cv2.CAP_PROP_FRAME_COUNT))
-    in_fps = cap.get(cv2.CAP_PROP_FPS)
-    w = int(cap.get(cv2.CAP_PROP_FRAME_WIDTH))
-    h = int(cap.get(cv2.CAP_PROP_FRAME_HEIGHT))
-    cap.release()
+    # Extract metadata via ffprobe
+    cmd_probe = [
+        'ffprobe', '-v', 'error',
+        '-select_streams', 'v:0',
+        '-show_entries', 'stream=width,height,nb_frames,duration,r_frame_rate',
+        '-of', 'csv=p=0',
+        input_path
+    ]
+    res = subprocess.run(cmd_probe, capture_output=True, text=True)
+    parts = res.stdout.strip().split(',')
+    w = int(parts[0])
+    h = int(parts[1])
+    
+    # In case nb_frames is missing from container metadata, count frames
+    if len(parts) > 2 and parts[2].isdigit():
+        total_in_frames = int(parts[2])
+    else:
+        # Fallback count
+        cmd_cnt = ['ffprobe', '-v', 'error', '-count_frames', '-select_streams', 'v:0', '-show_entries', 'stream=nb_read_frames', '-of', 'csv=p=0', input_path]
+        res_cnt = subprocess.run(cmd_cnt, capture_output=True, text=True)
+        total_in_frames = int(res_cnt.stdout.strip())
 
-    if total_in_frames <= 0 or w <= 0 or h <= 0:
-        print(f"Error: Unable to read valid video metadata from '{input_path}'.", file=sys.stderr)
-        return
-
-    in_duration = total_in_frames / in_fps if in_fps > 0 else total_in_frames / 30.0
     target_frames = int(round(target_duration * target_fps))
+    in_duration = total_in_frames / target_fps
     speed_factor = total_in_frames / target_frames
 
     print("=" * 65)
     print(f"Generating Compact Accelerated Video: {input_path} -> {output_path}")
-    print(f"  Source: {total_in_frames} frames ({in_duration:.2f}s @ {in_fps:.1f} fps, {w}x{h})")
+    print(f"  Source: {total_in_frames} frames ({in_duration:.2f}s, {w}x{h})")
     print(f"  Target: {target_frames} frames ({target_duration:.1f}s @ {target_fps:.1f} fps)")
     print(f"  Speed multiplier: {speed_factor:.2f}x speedup")
     print(f"  Codec: {codec} (CRF {crf}, Preset {preset})")
@@ -79,6 +125,7 @@ def generate_compact_eclipse(
     sample_set = set(sample_indices)
 
     os.makedirs(os.path.dirname(os.path.abspath(output_path)), exist_ok=True)
+    temp_raw = os.path.join(os.path.dirname(os.path.abspath(output_path)), "temp_compact_raw.mp4")
 
     ffmpeg_cmd = [
         'ffmpeg', '-y',
@@ -92,53 +139,44 @@ def generate_compact_eclipse(
         '-c:v', codec,
         '-crf', str(crf),
         '-preset', preset,
-        '-movflags', '+faststart',
         '-pix_fmt', 'yuv420p',
         '-color_range', '1',
         '-colorspace', 'bt709',
         '-color_trc', 'bt709',
         '-color_primaries', 'bt709',
+        temp_raw
     ]
 
     if codec == "libx265":
         ffmpeg_cmd.extend(['-tag:v', 'hvc1'])
 
-    ffmpeg_cmd.append(output_path)
-
     proc = subprocess.Popen(ffmpeg_cmd, stdin=subprocess.PIPE, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
-
-    cap = cv2.VideoCapture(input_path)
     pbar = tqdm(total=target_frames, desc="Resampling & encoding compact video")
 
     curr_frame_idx = 0
     sampled_count = 0
-    target_idx_iter = iter(sample_indices)
-    next_target = next(target_idx_iter)
 
-    while curr_frame_idx <= sample_indices[-1]:
-        if curr_frame_idx == next_target:
-            ret, frame = cap.read()
-            if not ret:
-                break
-            proc.stdin.write(frame.tobytes())
-            sampled_count += 1
-            pbar.update(1)
-            try:
-                next_target = next(target_idx_iter)
-            except StopIteration:
-                break
-        else:
-            # Fast forward through frames not in sample set
-            ret = cap.grab()
-            if not ret:
-                break
+    for frame, fw, fh in stream_video_frames_pipe(input_path):
+        if curr_frame_idx in sample_set:
+            # Handle multiple samples mapping to the same input frame if any
+            reps = sample_indices.count(curr_frame_idx)
+            for _ in range(reps):
+                proc.stdin.write(frame.tobytes())
+                sampled_count += 1
+                pbar.update(1)
         curr_frame_idx += 1
+        if sampled_count >= target_frames:
+            break
 
-    cap.release()
     pbar.close()
-
     proc.stdin.close()
     proc.wait()
+
+    # Move moov atom to beginning with faststart copy
+    cmd_fast = ['ffmpeg', '-y', '-loglevel', 'error', '-i', temp_raw, '-c', 'copy', '-movflags', '+faststart', output_path]
+    subprocess.run(cmd_fast, check=True)
+    if os.path.exists(temp_raw):
+        os.remove(temp_raw)
 
     if not os.path.exists(output_path):
         print(f"Error: Failed to create output video '{output_path}'.", file=sys.stderr)
