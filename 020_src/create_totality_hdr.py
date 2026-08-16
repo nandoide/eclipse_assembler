@@ -1,0 +1,354 @@
+#!/usr/bin/env python3
+"""
+=============================================================================
+TOTALITY HDR MULTI-EXPOSURE COMPOSITE ENGINE & AI PROMPT ADAPTER
+=============================================================================
+Extracts key temporal phases of solar totality from video footage, computes
+an immediate local HDR composite via OpenCV, and dynamically constructs an
+optimized, feature-adapted prompt for web-based multi-modal AI generation
+(Nano Banana / Gemini / ChatGPT).
+
+Key Phases Extracted:
+  1. Ingress Baily's Beads (t ≈ 2.0s)  - Diamond sparks & western limb
+  2. C2 Chromosphere & Prominence (t ≈ 8.0s) - Ruby H-alpha western flare
+  3. Mid-Totality Corona (t ≈ 51.7s)   - Soft, natural solar corona
+  4. C3 Chromosphere & Prominence (t ≈ 98.0s) - Carmine eastern limb features
+  5. Egress Baily's Beads (t ≈ 101.2s) - Diamond sparks along southeast limb
+
+Author: nandoide / eclipse_assembler
+=============================================================================
+"""
+
+import os
+import sys
+import argparse
+import cv2
+import numpy as np
+
+
+def fit_lunar_limb_raytracing(
+    img: np.ndarray,
+    approx_center: tuple = (640.0, 360.0),
+    r_min: float = 180.0,
+    r_max: float = 320.0,
+    num_rays: int = 360,
+    num_samples_per_ray: int = 200
+) -> tuple:
+    """Finds the sub-pixel center (cx, cy) and radius r using radial ray-tracing."""
+    gray = cv2.cvtColor(img, cv2.COLOR_BGR2GRAY)
+    angles = np.linspace(0, 2 * np.pi, num_rays, endpoint=False)
+    radii = np.linspace(r_min, r_max, num_samples_per_ray)
+
+    limb_pts = []
+    h, w = gray.shape
+
+    for ang in angles:
+        cos_a = np.cos(ang)
+        sin_a = np.sin(ang)
+        xs = np.clip(approx_center[0] + radii * cos_a, 0, w - 1).astype(np.float32)
+        ys = np.clip(approx_center[1] + radii * sin_a, 0, h - 1).astype(np.float32)
+
+        samples = cv2.remap(gray, xs[:, np.newaxis], ys[:, np.newaxis], cv2.INTER_LINEAR).flatten()
+        grad = np.gradient(samples)
+        max_idx = np.argmax(grad)
+
+        if grad[max_idx] > 2.0:
+            r_edge = radii[max_idx]
+            limb_pts.append((approx_center[0] + r_edge * cos_a, approx_center[1] + r_edge * sin_a))
+
+    if len(limb_pts) < 10:
+        return approx_center, 246.0
+
+    pts = np.array(limb_pts, dtype=np.float32)
+    (cx, cy), r = cv2.minEnclosingCircle(pts)
+    return (float(cx), float(cy)), float(r)
+
+
+def align_to_master_geometry(
+    img: np.ndarray,
+    target_center: tuple = (640.0, 360.0),
+    target_radius: float = 246.0
+) -> tuple:
+    """Warps input image with Lanczos4 to align lunar disk to target_center and radius."""
+    (cx, cy), r = fit_lunar_limb_raytracing(img, approx_center=target_center)
+    scale = target_radius / max(r, 1e-4)
+
+    M = np.array([
+        [scale, 0.0, target_center[0] - scale * cx],
+        [0.0, scale, target_center[1] - scale * cy]
+    ], dtype=np.float32)
+
+    aligned = cv2.warpAffine(
+        img, M, (img.shape[1], img.shape[0]),
+        flags=cv2.INTER_LANCZOS4,
+        borderMode=cv2.BORDER_CONSTANT,
+        borderValue=(0, 0, 0)
+    )
+    return aligned, (cx, cy), r
+
+
+def extract_aligned_frame_at(cap, sec: float, fps: float, target_center=(640.0, 360.0), target_radius=246.0):
+    """Fetches a frame at timestamp sec and returns its sub-pixel aligned version."""
+    total_frames = int(cap.get(cv2.CAP_PROP_FRAME_COUNT))
+    f_idx = max(0, min(total_frames - 1, int(sec * fps)))
+    cap.set(cv2.CAP_PROP_POS_FRAMES, f_idx)
+    ret, frame = cap.read()
+    if not ret:
+        return None, None
+    aligned, (cx, cy), r = align_to_master_geometry(frame, target_center, target_radius)
+    return frame, aligned
+
+
+def angle_to_clock_position(radians: float) -> str:
+    """Converts mathematical angle (0=East, pi/2=South, pi=West, -pi/2=North) to clock position."""
+    # Screen coordinates: X right, Y down
+    deg = np.degrees(radians) % 360.0  # 0=3 o'clock, 90=6 o'clock, 180=9 o'clock, 270=12 o'clock
+    clock_hour = int(round((deg / 30.0) + 3.0)) % 12
+    if clock_hour == 0:
+        clock_hour = 12
+    return f"{clock_hour} o'clock"
+
+
+def detect_prominence_features(img_aligned: np.ndarray, target_center=(640.0, 360.0), target_radius=246.0, is_east=False) -> str:
+    """Detects primary angular sectors of H-alpha prominences and returns clean clock position."""
+    h, w = img_aligned.shape[:2]
+    Y, X = np.ogrid[:h, :w]
+    dist = np.sqrt((X - target_center[0])**2 + (Y - target_center[1])**2)
+    angles = np.arctan2(Y - target_center[1], X - target_center[0])
+
+    b, g, r = img_aligned[:, :, 0].astype(float), img_aligned[:, :, 1].astype(float), img_aligned[:, :, 2].astype(float)
+    redness = np.maximum(0.0, r - np.maximum(g, b))
+    in_ring = (dist >= (target_radius - 2.0)) & (dist <= (target_radius + 25.0))
+    valid_red = redness * in_ring.astype(float)
+
+    # 24 sectors (15 deg each)
+    num_sectors = 24
+    sector_edges = np.linspace(-np.pi, np.pi, num_sectors + 1)
+    sector_sums = []
+    for i in range(num_sectors):
+        in_sec = in_ring & (angles >= sector_edges[i]) & (angles < sector_edges[i+1])
+        sector_sums.append(np.sum(valid_red[in_sec]))
+
+    top_indices = np.argsort(sector_sums)[::-1]
+    max_val = max(1e-4, sector_sums[top_indices[0]])
+    active_sectors = [i for i in top_indices if sector_sums[i] > 0.40 * max_val]
+
+    clocks = []
+    for idx in active_sectors:
+        mid_ang = 0.5 * (sector_edges[idx] + sector_edges[idx+1])
+        deg = (np.degrees(mid_ang) + 360.0) % 360.0
+        clock = int(round((deg / 30.0) + 3.0)) % 12
+        if clock == 0:
+            clock = 12
+        clocks.append(clock)
+
+    clocks = sorted(list(set(clocks)))
+    if is_east:
+        # Eastern hemisphere (12 to 6 o'clock)
+        east_clocks = [c for c in clocks if c in [1, 2, 3, 4, 5]]
+        if east_clocks:
+            return f"{min(east_clocks)} to {max(east_clocks)} o'clock position"
+        return "3 to 4 o'clock position"
+    else:
+        # Western hemisphere (6 to 12 o'clock)
+        west_clocks = [c for c in clocks if c in [7, 8, 9, 10, 11]]
+        if west_clocks:
+            return f"{min(west_clocks)} to {max(west_clocks)} o'clock position (centering at 9 o'clock)"
+        return "9 o'clock position"
+
+
+def build_dynamic_ai_prompt(c2_pos: str, c3_pos: str) -> str:
+    """Constructs the tailored, programmatically adapted prompt for AI generation."""
+    prompt = (
+        "Exact scale astrophotographic composite of the 5 total solar eclipse reference photos. "
+        "Maintain the exact true proportion, size, and position of all solar features as captured in the camera: "
+        f"do not enlarge the red prominence on the left (it must remain a small, delicate ruby-red feature at {c2_pos} "
+        "along the lunar limb, exactly matching the reference photo). "
+        "The solar corona must be soft, diffuse, and natural, matching the mid-totality photo. "
+        f"On the eastern limb ({c3_pos}), include the small real chromospheric red points. "
+        "Along the western edge and the lower-right crescent (around 5 o'clock), include the sparkling white Baily's Beads "
+        "from the ingress and egress frames. Center is a pitch black circular Moon. "
+        "Direct faithful overlay of the 5 exposures without exaggeration."
+    )
+    return prompt
+
+
+def generate_local_opencv_composite(
+    aligned_frames: dict,
+    target_center=(640.0, 360.0),
+    target_radius=246.0
+) -> np.ndarray:
+    """Generates the local mathematical OpenCV HDR composite as an immediate offline output."""
+    h, w = 720, 1280
+    Y, X = np.ogrid[:h, :w]
+    dist = np.sqrt((X - target_center[0])**2 + (Y - target_center[1])**2)
+    r_moon = target_radius
+
+    f_in = aligned_frames['1_baily_in']
+    f_c2 = aligned_frames['2_c2_prom']
+    f_mid = aligned_frames['3_mid_corona']
+    f_c3 = aligned_frames['4_c3_prom']
+    f_eg = aligned_frames['5_baily_eg']
+
+    # 1. Base Corona
+    corona_gray = cv2.cvtColor(f_mid, cv2.COLOR_BGR2GRAY).astype(np.float32)
+    r_offset = np.maximum(0.0, dist - r_moon)
+    attenuation = np.clip(r_offset / 15.0, 0.40, 1.0)
+    outer_boost = np.clip(1.0 + (dist - r_moon) / 100.0, 1.0, 2.0)
+    corona_comp = corona_gray * attenuation * outer_boost
+
+    corona_rgb = np.stack([
+        corona_comp * 0.92,
+        corona_comp * 0.97,
+        corona_comp * 1.05
+    ], axis=2)
+
+    # 2. Prominence Extraction
+    def extract_prominence(img):
+        f_flt = img.astype(np.float32)
+        b, g, r = f_flt[:, :, 0], f_flt[:, :, 1], f_flt[:, :, 2]
+        excess = np.maximum(0.0, r - np.maximum(g, b))
+        in_ring = np.clip(1.0 - np.abs(dist - (r_moon + 3.0)) / 20.0, 0.0, 1.0)
+        alpha = np.clip((excess - 10.0) / 40.0, 0.0, 1.0) * in_ring
+        alpha_feathered = cv2.GaussianBlur(alpha, (0, 0), 1.0)[:, :, np.newaxis]
+        return f_flt, alpha_feathered
+
+    p2_rgb, p2_a = extract_prominence(f_c2)
+    p4_rgb, p4_a = extract_prominence(f_c3)
+
+    # 3. Beads Extraction
+    def extract_beads(img):
+        f_flt = img.astype(np.float32)
+        b, g, r = f_flt[:, :, 0], f_flt[:, :, 1], f_flt[:, :, 2]
+        lum = 0.299 * r + 0.587 * g + 0.114 * b
+        in_limb = np.clip(1.0 - np.abs(dist - r_moon) / 7.0, 0.0, 1.0)
+        alpha = np.clip((lum - 130.0) / 50.0, 0.0, 1.0) * in_limb
+        alpha_feathered = cv2.GaussianBlur(alpha, (0, 0), 0.8)[:, :, np.newaxis]
+        return f_flt, alpha_feathered
+
+    b1_rgb, b1_a = extract_beads(f_in)
+    b5_rgb, b5_a = extract_beads(f_eg)
+
+    # Blend
+    p_tot_a = np.clip(p2_a + p4_a, 0.0, 1.0)
+    p_tot_rgb = np.maximum(p2_rgb, p4_rgb)
+    hdr = corona_rgb * (1.0 - 0.90 * p_tot_a) + p_tot_rgb * 1.35
+    hdr = np.maximum(hdr, corona_rgb * 0.70)
+
+    b_tot_a = np.clip(b1_a + b5_a, 0.0, 1.0)
+    b_tot_rgb = np.maximum(b1_rgb, b5_rgb)
+    hdr = hdr * (1.0 - 0.70 * b_tot_a) + b_tot_rgb * 1.40
+    hdr = np.maximum(hdr, corona_rgb * 0.50)
+
+    moon_mask = np.clip((dist - (r_moon - 1.5)) / 2.0, 0.0, 1.0)[:, :, np.newaxis]
+    return (hdr * moon_mask).clip(0, 255).astype(np.uint8)
+
+
+def run_pipeline(
+    video_path: str = "010_in/03_video_realtime.mp4",
+    out_dir: str = "040_out",
+    samples_dir: str = "040_out/hdr_samples"
+):
+    """Executes the extraction, local synthesis, feature detection, and prompt generation."""
+    os.makedirs(out_dir, exist_ok=True)
+    os.makedirs(samples_dir, exist_ok=True)
+
+    repo_root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+    if not os.path.exists(video_path):
+        candidate = os.path.join(repo_root, video_path)
+        if os.path.exists(candidate):
+            video_path = candidate
+        else:
+            alt_out = os.path.join(repo_root, "040_out", "03_video_realtime.mp4")
+            if os.path.exists(alt_out):
+                video_path = alt_out
+
+    print("=================================================================")
+    print("TOTALITY HDR COMPOSITE & AI PROMPT ADAPTER ENGINE")
+    print("=================================================================")
+    print(f"  Video Source       : {video_path}")
+    print(f"  Samples Directory  : {samples_dir}")
+    print(f"  Output Directory   : {out_dir}")
+    print("=================================================================")
+
+    cap = cv2.VideoCapture(video_path)
+    if not cap.isOpened():
+        raise FileNotFoundError(f"Cannot open video source: {video_path}")
+
+    fps = cap.get(cv2.CAP_PROP_FPS) or 30.0
+
+    # 5 Key Timestamps (Optimized with early Baily ingress at 2.0s)
+    timestamps = {
+        '1_baily_in': 2.0,
+        '2_c2_prom': 8.0,
+        '3_mid_corona': 51.7,
+        '4_c3_prom': 98.0,
+        '5_baily_eg': 101.2
+    }
+
+    raw_paths = {}
+    aligned_frames = {}
+
+    print("Extracting and saving the 5 key temporal frames...")
+    for name, sec in timestamps.items():
+        raw_f, aligned_f = extract_aligned_frame_at(cap, sec, fps)
+        out_path = os.path.join(samples_dir, f"{name}.jpg")
+        cv2.imwrite(out_path, raw_f, [cv2.IMWRITE_JPEG_QUALITY, 98])
+        raw_paths[name] = out_path
+        aligned_frames[name] = aligned_f
+        print(f"  • [{name:14s}] (t = {sec:5.1f}s) -> {out_path}")
+
+    cap.release()
+
+    # 1. Generate Local Mathematical HDR Composite
+    print("\nGenerating local mathematical OpenCV HDR composite...")
+    local_hdr = generate_local_opencv_composite(aligned_frames)
+    local_path = os.path.join(out_dir, "totality_hdr_local.jpg")
+    master_path = os.path.join(out_dir, "totality_hdr.jpg")
+    cv2.imwrite(local_path, local_hdr, [cv2.IMWRITE_JPEG_QUALITY, 98])
+    if not os.path.exists(master_path):
+        cv2.imwrite(master_path, local_hdr, [cv2.IMWRITE_JPEG_QUALITY, 98])
+    print(f"  ✓ Local HDR Composite saved to: {local_path}")
+
+    # 2. Detect Features & Programmatically Adapt Prompt
+    print("\nAnalyzing optical features in frames for dynamic prompt adaptation...")
+    c2_pos = detect_prominence_features(aligned_frames['2_c2_prom'], is_east=False)
+    c3_pos = detect_prominence_features(aligned_frames['4_c3_prom'], is_east=True)
+
+    prompt = build_dynamic_ai_prompt(c2_pos, c3_pos)
+
+    # Save prompt to file
+    prompt_file = os.path.join(samples_dir, "ai_prompt.txt")
+    with open(prompt_file, "w", encoding="utf-8") as pf:
+        pf.write(prompt + "\n")
+    print(f"  ✓ Adapted AI prompt saved to: {prompt_file}")
+
+    # 3. Print User Guide
+    print("\n" + "=" * 70)
+    print("📋 GUÍA RÁPIDA PARA GENERACIÓN IA (WEB / NANO BANANA / CHATGPT)")
+    print("=" * 70)
+    print("1. Sube a la interfaz web las 5 imágenes extraídas:")
+    for p in raw_paths.values():
+        print(f"   📷 {p}")
+    print("\n2. Pega el siguiente prompt adaptado automáticamente a tus fotos:\n")
+    print("-" * 70)
+    print(prompt)
+    print("-" * 70)
+    print(f"\n3. Guarda la imagen generada en la web como: {master_path}")
+    print("=" * 70 + "\n")
+
+
+def main():
+    parser = argparse.ArgumentParser(
+        description="Totality HDR Multi-Exposure Composite Engine & AI Prompt Adapter"
+    )
+    parser.add_argument("-v", "--video", default="010_in/03_video_realtime.mp4", help="Path to real-time totality video")
+    parser.add_argument("-o", "--out-dir", default="040_out", help="Output directory")
+    parser.add_argument("-s", "--samples-dir", default="040_out/hdr_samples", help="Samples export directory")
+
+    args = parser.parse_args()
+    run_pipeline(video_path=args.video, out_dir=args.out_dir, samples_dir=args.samples_dir)
+
+
+if __name__ == "__main__":
+    main()

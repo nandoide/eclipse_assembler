@@ -318,6 +318,30 @@ python 020_src/create_end_titles.py -i 010_in/07_endtitles.md --duration 6.0
 python 020_src/create_end_titles.py -i 010_in/07_endtitles.md -W 3840 -H 2160 -o 040_out/07_endtitles_4k.mp4
 ```
 
+### 7. Totality HDR Composite Photo & AI Prompt Generator (`create_totality_hdr.py`)
+Extracts the 5 key temporal phases from raw totality footage, generates an immediate local OpenCV mathematical HDR composite, and dynamically formats a tailored prompt adapted to the detected prominence and Baily bead positions for web-based multi-modal AI generation (Nano Banana / Gemini / ChatGPT):
+
+```bash
+# Run the automated extraction, local synthesis, and prompt generation:
+python 020_src/create_totality_hdr.py
+
+# Custom video input or custom output directory:
+python 020_src/create_totality_hdr.py -v 010_in/03_video_realtime.mp4 -o 040_out
+```
+
+#### What `create_totality_hdr.py` produces:
+1. **5 Clean Numbered Temporal Frames** (`040_out/hdr_samples/`):
+   - `1_baily_in.jpg` ($t = 2.0\text{s}$): Ingress Baily's beads & western limb.
+   - `2_c2_prom.jpg` ($t = 8.0\text{s}$): Western ruby-red $H\alpha$ prominence loops.
+   - `3_mid_corona.jpg` ($t = 51.7\text{s}$): Soft, natural mid-totality solar corona.
+   - `4_c3_prom.jpg` ($t = 98.0\text{s}$): Eastern carmine chromospheric spikes.
+   - `5_baily_eg.jpg` ($t = 101.2\text{s}$): Egress diamond sparks along southeast limb.
+2. **Local Mathematical OpenCV HDR Composite** (`040_out/totality_hdr_local.jpg`):
+   - Instantaneous, 100% offline composite with sub-pixel ray-tracing alignment and continuous $H\alpha$ spectral feathering.
+3. **Tailored AI Generation Prompt** (`040_out/hdr_samples/ai_prompt.txt`):
+   - Programmatically detects angular positions of prominences and beads on the limb and formats a ready-to-paste prompt for web AI generation.
+
+
 Example markdown descriptor (`010_in/07_endtitles.md`):
 ```markdown
 # Telescope

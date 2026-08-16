@@ -237,7 +237,8 @@ def build_timeline_mapping(
                             duration = float(tok)
                 else:
                     a_type = "video_realtime"
-            elif primary == "photo":
+            elif primary in ["photo", "totality", "hdr"]:
+                a_type = "totality" if (primary in ["totality", "hdr"] or "totality" in name_no_ext) else "photo"
                 for tok in tokens[1:]:
                     if tok.replace('.', '', 1).isdigit():
                         duration = float(tok)
@@ -368,11 +369,15 @@ def build_timeline_mapping(
             speed_factor = 1.0
             seg_type_name = "video_realtime"
 
-        elif ctype == "photo":
-            seg_dt_start = datetime.datetime(dt_base.year, dt_base.month, dt_base.day, 20, 28, 0)
-            seg_dt_end = datetime.datetime(dt_base.year, dt_base.month, dt_base.day, 20, 28, 6)
+        elif ctype in ["photo", "totality"]:
+            seg_dt_start = dt_totality_start
+            seg_dt_end = dt_totality_end
             speed_factor = None
-            seg_type_name = "photo_corona"
+            raw_n = str(item.get('raw_name', '')).lower()
+            if ctype == "totality" or "totality" in raw_n or "hdr" in raw_n:
+                seg_type_name = "totality_artwork"
+            else:
+                seg_type_name = "photo_corona"
 
         elif ctype == "composite":
             seg_dt_start = dt_ingress_start
@@ -483,6 +488,11 @@ def get_astronomical_state_at(t: float, segments: list, c2_point: float, c3_poin
                 phase_str = f"C3->C4: Egreso Parcial ({speed_str})" if is_es else f"C3->C4: Partial Egress ({speed_str})"
                 return clock_str, phase_str
 
+            elif stype == "totality_artwork":
+                clock_str = f"{seg['dt_start'].strftime('%H:%M:%S')} - {seg['dt_end'].strftime('%H:%M:%S')}"
+                phase_str = "Composición artística de la totalidad (HDR multifase)" if is_es else "Artistic Totality HDR Composite (Multi-phase fusion - Artwork)"
+                return clock_str, phase_str
+
             elif stype == "photo_corona":
                 clock_str = seg['dt_start'].strftime("%H:%M:%S")
                 phase_str = "Corona Solar (Totalidad)" if is_es else "Solar Corona (Totality)"
@@ -507,8 +517,11 @@ def get_astronomical_state_at(t: float, segments: list, c2_point: float, c3_poin
                     phase_str = f"C3->C4: Anillo de Diamantes ({speed_str})" if is_es else f"C3->C4: Diamond Ring ({speed_str})"
                 elif p_type == "timelapse_egress":
                     phase_str = f"C3->C4: Egreso Parcial ({speed_str})" if is_es else f"C3->C4: Partial Egress ({speed_str})"
-                elif p_type == "photo_corona":
-                    phase_str = "Corona Solar (Totalidad)" if is_es else "Solar Corona (Totality)"
+                elif p_type in ["photo_corona", "totality_artwork"]:
+                    if p_type == "totality_artwork":
+                        phase_str = "Composición artística de la totalidad (HDR multifase)" if is_es else "Artistic Totality HDR Composite (Multi-phase fusion - Artwork)"
+                    else:
+                        phase_str = "Corona Solar (Totalidad)" if is_es else "Solar Corona (Totality)"
                 else:
                     return None, None
                 return clock_str, phase_str
@@ -737,6 +750,10 @@ def generate_youtube_metadata(
             chapters_bilingual.append((st, t_str, "Egreso Parcial / Partial Egress (Timelapse)"))
             chapters_es.append((st, t_str, "Egreso Parcial (Timelapse)"))
             chapters_en.append((st, t_str, "Partial Egress (Timelapse)"))
+        elif stype == "totality_artwork":
+            chapters_bilingual.append((st, t_str, "Composición Artística HDR de la Totalidad / Artistic Totality HDR Composite"))
+            chapters_es.append((st, t_str, "Composición Artística HDR de la Totalidad (Multifase)"))
+            chapters_en.append((st, t_str, "Artistic Totality HDR Multi-Phase Composite (Artwork)"))
         elif stype == "photo_corona":
             chapters_bilingual.append((st, t_str, "Fotografía HDR de la Corona / Solar Corona Photo"))
             chapters_es.append((st, t_str, "Fotografía HDR de la Corona Solar"))

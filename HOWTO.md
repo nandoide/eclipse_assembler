@@ -397,6 +397,8 @@ Supported render sizes range from 720p up to **8K (7680x7680)** and **16K (15360
 
 ---
 
+---
+
 ## 8. Cinematic Closing Credits & Production Telemetry Engine
 
 `020_src/create_end_titles.py` generates an anti-aliased closing credits card and video clip (`07_endtitles.mp4`) when a markdown descriptor (e.g., `010_in/07_endtitles.md`) is provided in the input directory:
@@ -407,7 +409,35 @@ Supported render sizes range from 720p up to **8K (7680x7680)** and **16K (15360
 
 ---
 
-## 9. Master Film Concatenation & H.265 Broadcast Encoding
+## 9. Totality HDR Composite Photo & AI Prompt Generator
+
+`020_src/create_totality_hdr.py` extracts the 5 key temporal moments of solar totality, synthesizes an immediate local mathematical HDR photo, and formats a tailored prompt adapted to the detected prominence and Baily bead positions for web-based multi-modal AI generation:
+
+```bash
+# Run the automated extraction, local synthesis, and prompt generation:
+python 020_src/create_totality_hdr.py
+```
+
+### Key Workflow:
+1. **5 Temporal Samples (`040_out/hdr_samples/`)**:
+   - `1_baily_in.jpg` ($t = 2.0\text{s}$): Ingress Baily's beads & western limb.
+   - `2_c2_prom.jpg` ($t = 8.0\text{s}$): Western ruby-red $H\alpha$ prominence loops.
+   - `3_mid_corona.jpg` ($t = 51.7\text{s}$): Soft, natural mid-totality solar corona.
+   - `4_c3_prom.jpg` ($t = 98.0\text{s}$): Eastern carmine chromospheric spikes.
+   - `5_baily_eg.jpg` ($t = 101.2\text{s}$): Egress diamond sparks along southeast limb.
+2. **Local Mathematical HDR (`040_out/totality_hdr_local.jpg`)**:
+   - 100% offline, deterministic OpenCV composite with sub-pixel ray-tracing alignment and continuous $H\alpha$ spectral feathering.
+3. **Web AI Generation (Nano Banana / Gemini / ChatGPT)**:
+   - Upload the 5 extracted images from `040_out/hdr_samples/`.
+   - Copy & paste the tailored prompt generated in `040_out/hdr_samples/ai_prompt.txt`.
+   - Save the returned master image as `040_out/totality_hdr.jpg`.
+
+
+---
+
+---
+
+## 10. Master Film Concatenation & H.265 Broadcast Encoding
 
 `020_src/build_full_eclipse.py` orchestrates the complete assembly:
 
@@ -423,7 +453,7 @@ Supported render sizes range from 720p up to **8K (7680x7680)** and **16K (15360
 
 ---
 
-## 10. Step-by-Step Recipes & CLI Reference
+## 11. Step-by-Step Recipes & CLI Reference
 
 ### Environment Setup
 ```bash

@@ -105,7 +105,7 @@ def parse_coc_filename(filepath):
         else:
             asset_type = "video_realtime"
 
-    elif primary_token == "photo":
+    elif primary_token in ["photo", "totality", "hdr"]:
         asset_type = "photo"
         for tok in tokens[1:]:
             if tok.replace('.', '', 1).isdigit():
