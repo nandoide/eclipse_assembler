@@ -907,7 +907,48 @@ def generate_arc_composite(samples, width=1280, height=720, margin_x=None, disk_
                 }
             ]
 
-    return render_consistent_scale(samples, positions, width=width, height=height, disk_scale_factor=disk_scale_factor, show_labels=show_labels, featured_contacts=featured_contacts_data)
+def generate_spiral_composite(samples, width=3840, height=3840, turns=1.65, power=0.88, direction="cw", disk_scale_factor=0.78, show_labels=False):
+    """
+    Generates an expanding Archimedean/power spiral progression starting directly at
+    the canvas center (Frame 0) and winding outwards to the canvas perimeter.
+    Designed exclusively for square frames (e.g. 3840x3840) to fill the space
+    harmoniously with equal arc-length spacing between consecutive disks.
+    Central featured contacts are disabled for this layout.
+    """
+    if width != height:
+        print(f"  [WARN] Spiral layout requires a square frame. Adjusting {width}x{height} -> {min(width, height)}x{min(width, height)}")
+        width = min(width, height)
+        height = width
+
+    N = len(samples)
+    cx, cy = width / 2.0, height / 2.0
+    r_max = width * 0.41
+
+    theta_max = turns * 2.0 * math.pi
+    dense_theta = np.linspace(0.0, theta_max, 3000)
+    dense_r = ((dense_theta / theta_max) ** power) * r_max
+
+    # Starting angle: pointing straight up (-pi/2) and spiraling outward
+    if direction == "ccw":
+        dense_x = cx + dense_r * np.cos(-dense_theta - math.pi / 2.0)
+        dense_y = cy + dense_r * np.sin(-dense_theta - math.pi / 2.0)
+    else:
+        dense_x = cx + dense_r * np.cos(dense_theta - math.pi / 2.0)
+        dense_y = cy + dense_r * np.sin(dense_theta - math.pi / 2.0)
+
+    dx = np.diff(dense_x)
+    dy = np.diff(dense_y)
+    cum_len = np.concatenate([[0.0], np.cumsum(np.sqrt(dx**2 + dy**2))])
+    total_len = cum_len[-1]
+
+    target_s = np.linspace(0.0, total_len, N)
+    interp_x = interp1d(cum_len, dense_x)
+    interp_y = interp1d(cum_len, dense_y)
+
+    positions = np.column_stack([interp_x(target_s), interp_y(target_s)]).astype(np.float32)
+
+    # Spiral layout intentionally does not use inner contacts as the sequence itself fills the center
+    return render_consistent_scale(samples, positions, width=width, height=height, disk_scale_factor=disk_scale_factor, show_labels=show_labels, featured_contacts=None)
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -1031,8 +1072,22 @@ def build_composite(
         )
         suffix = "arc"
 
+    elif layout in ["spiral", "espiral", "helix"]:
+        # Enforce square canvas for spiral layout
+        if width != height:
+            square_sz = min(width, height)
+            width = square_sz
+            height = square_sz
+        canvas = generate_spiral_composite(
+            samples, width=width, height=height,
+            direction=direction or "cw",
+            disk_scale_factor=disk_scale_factor,
+            show_labels=show_labels,
+        )
+        suffix = "spiral"
+
     else:
-        raise ValueError(f"Unknown layout: '{layout}'. Choose sinusoid/vertical/vertical-s/circle/diagonal/horizontal/arc.")
+        raise ValueError(f"Unknown layout: '{layout}'. Choose sinusoid/vertical/vertical-s/circle/diagonal/horizontal/arc/spiral.")
 
     # Save image files
     res_tag = f"{width}p" if width == height else f"{width}x{height}"
@@ -1101,15 +1156,15 @@ if __name__ == "__main__":
         description="Generate UHD & custom aspect-ratio solar eclipse composite artwork."
     )
     parser.add_argument("--layout", "-l", type=str,
-                        choices=["sinusoid", "s-curve", "vertical", "vertical-s", "mobile", "circle", "ring", "ellipse", "oval", "diagonal", "horizontal", "arc", "all"],
+                        choices=["sinusoid", "s-curve", "vertical", "vertical-s", "mobile", "circle", "ring", "ellipse", "oval", "diagonal", "horizontal", "arc", "spiral", "espiral", "all"],
                         default="sinusoid",
                         help="Composition layout (default: sinusoid)")
     parser.add_argument("--size", "-s", type=int, default=None,
                         help="Square canvas size in pixels (e.g. 3840, 2048)")
     parser.add_argument("--width", "-W", type=int, default=None,
-                        help="Canvas width in pixels (default: 1280 for landscape, 2160 for mobile)")
+                        help="Canvas width in pixels (default: 1280 for landscape, 2160 for mobile, 3840 for square/spiral)")
     parser.add_argument("--height", "-H", type=int, default=None,
-                        help="Canvas height in pixels (default: 720 for landscape, 3840 for mobile)")
+                        help="Canvas height in pixels (default: 720 for landscape, 3840 for mobile, 3840 for square/spiral)")
     parser.add_argument("--scale-factor", type=float, default=0.78,
                         help="Disk scale factor relative to separation distance (default: 0.78)")
     parser.add_argument("--margin", type=int, default=None,
@@ -1119,7 +1174,7 @@ if __name__ == "__main__":
     parser.add_argument("--orbit-radius", type=int, default=None,
                         help="Circle orbit radius in pixels (default: auto)")
     parser.add_argument("--direction", type=str, default=None,
-                        help="Progression direction (ccw/cw for circle; bottom_left_to_top_right for diagonal)")
+                        help="Progression direction (ccw/cw for circle/spiral; bottom_left_to_top_right for diagonal)")
     parser.add_argument("--offset-seconds", type=float, default=44.3,
                         help="Clock calibration offset in seconds (default: 44.3s)")
     parser.add_argument("--date", "-d", type=str, default=None,
@@ -1137,11 +1192,15 @@ if __name__ == "__main__":
                         help="Custom output path (default: 040_out/eclipse_composite_<layout>_<resolution>.png)")
     args = parser.parse_args()
 
-    layouts = ["sinusoid", "vertical", "vertical-s", "circle", "diagonal", "horizontal", "arc"] if args.layout == "all" else [args.layout]
+    layouts = ["sinusoid", "vertical", "vertical-s", "circle", "diagonal", "horizontal", "arc", "spiral"] if args.layout == "all" else [args.layout]
     for lay in layouts:
         if args.size is not None:
             lay_w = args.size
             lay_h = args.size
+        elif lay in ["spiral", "espiral"]:
+            square_dim = args.size or args.width or args.height or 3840
+            lay_w = square_dim
+            lay_h = square_dim
         elif lay in ["vertical", "vertical-s", "mobile", "s-vertical"]:
             lay_w = args.width or 2160
             lay_h = args.height or 3840

@@ -261,6 +261,7 @@ python 020_src/create_title_card.py --date 2026-08-12 --duration 5.0
 Creates standalone high-resolution astronomical composite artwork across diverse mathematical progressions and aspect ratios, accompanied by comprehensive JSON metadata:
 
 #### Key Layouts & Geometries:
+- **`spiral` (Expanding Spiral)**: Progression starting directly at the center (Frame 0) and spiraling outward to the canvas perimeter with equal arc-length spacing. Tailored exclusively for square formats (e.g. 3840p) to maximize canvas fill and visual balance without central contacts.
 - **`arc` (Parabolic Arch)**: Progression following a celestial solar arc. In portrait orientation ($9:16$), it expands vertically to maximize negative space.
 - **`circle` / `ellipse`**: Circular progression with totality at 12 o'clock (top). Automatically transforms into an adaptive ellipse on non-square canvases ($16:9$, $9:16$).
 - **`sinusoid` (S-Curve)**: Continuous sinusoidal wave parameterization with equal arc-length spacing.
@@ -268,29 +269,33 @@ Creates standalone high-resolution astronomical composite artwork across diverse
 - **`horizontal` / `diagonal`**: Linear horizontal and bottom-left to top-right diagonal trajectories.
 
 #### Featured Totality Contacts (`--contacts`):
-Inside the cavity of `arc`, `circle`, `ellipse`, and `sinusoid` layouts, the generator can render prominent enlarged keyframes ($1.22\times$ scale) of the totality sequence: **`C2`** *(diamond ring / Baily's beads at 20:27:35 CEST)*, **`TOTAL`** *(maximum grand corona at 20:28:23 CEST)*, and **`C3`** *(third contact diamond ring at 20:29:12 CEST)*.
+Inside the cavity of `arc`, `circle`, `ellipse`, and `sinusoid` layouts, the generator can render prominent enlarged keyframes ($1.22\times$ scale) of the totality sequence: **`C2`** *(diamond ring / Baily's beads at 20:27:35 CEST)*, **`TOTAL`** *(maximum grand corona at 20:28:23 CEST)*, and **`C3`** *(third contact diamond ring at 20:29:12 CEST)*. (Note: `spiral` layout does not use contacts as the sequence itself naturally fills the central core).
 
 ```bash
-# 1. Parabolic Celestial Arc with Contacts (Default for Video Assembly - 1280x720 16:9):
+# 1. 4K Squared Expanding Spiral (3840x3840 px - Center-to-Perimeter):
+python 020_src/create_eclipse_composite.py --layout spiral --size 3840
+python 020_src/create_eclipse_composite.py --layout spiral --size 3840 --show-labels
+
+# 2. Parabolic Celestial Arc with Contacts (Default for Video Assembly - 1280x720 16:9):
 python 020_src/create_eclipse_composite.py --layout arc -W 1280 -H 720 --contacts
 
-# 2. 4K UHD Desktop Arc with Timestamps (3840x2160 px):
+# 3. 4K UHD Desktop Arc with Timestamps (3840x2160 px):
 python 020_src/create_eclipse_composite.py --layout arc -W 3840 -H 2160 --contacts --show-labels
 
-# 3. 4K Squared Circle/Ring with Contacts & Centered Labels (3840x3840 px):
+# 4. 4K Squared Circle/Ring with Contacts & Centered Labels (3840x3840 px):
 python 020_src/create_eclipse_composite.py --layout circle --size 3840 --contacts --show-labels
 
-# 4. Vertical Mobile Wallpaper 9:16 with Vertical Contacts (2160x3840 px):
+# 5. Vertical Mobile Wallpaper 9:16 with Vertical Contacts (2160x3840 px):
 python 020_src/create_eclipse_composite.py --layout arc -W 2160 -H 3840 --contacts vertical --show-labels
 python 020_src/create_eclipse_composite.py --layout circle -W 2160 -H 3840 --contacts vertical --show-labels
 
-# 5. Sinusoidal S-Curve 8K Master (7680x7680 px):
+# 6. Sinusoidal S-Curve 8K Master (7680x7680 px):
 python 020_src/create_eclipse_composite.py --layout sinusoid --size 7680 --contacts --show-labels
 
-# 6. Clean Orbital Curve without Central Contacts:
+# 7. Clean Orbital Curve without Central Contacts:
 python 020_src/create_eclipse_composite.py --layout circle --size 3840 --no-contacts --show-labels
 
-# 7. Generate all layouts simultaneously:
+# 8. Generate all layouts simultaneously:
 python 020_src/create_eclipse_composite.py --layout all --contacts --show-labels
 ```
 
@@ -374,7 +379,8 @@ eclipse_assembler/
 │   ├── eclipse_contacts_comparison.json# 📋 JSON dataset of observational residuals
 │   ├── eclipse_composite_arc_*.png   # 🖼️ High-resolution arc composite artwork (720p, 4K UHD)
 │   ├── eclipse_composite_circle_*.png# 🖼️ High-resolution circular/ellipse composite artwork
-│   └── eclipse_composite_sinusoid_*.png# 🖼️ High-resolution sinusoidal composite artwork (HD, 4K, 8K)
+│   ├── eclipse_composite_sinusoid_*.png# 🖼️ High-resolution sinusoidal composite artwork (HD, 4K, 8K)
+│   └── eclipse_composite_spiral_*.png# 🖼️ High-resolution expanding spiral composite artwork (3840p)
 │
 ├── requirements.txt                  # Python package dependencies
 └── README.md                         # Project documentation

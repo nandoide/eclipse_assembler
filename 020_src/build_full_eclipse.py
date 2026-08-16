@@ -115,7 +115,7 @@ def parse_coc_filename(filepath):
         asset_type = "composite"
         for tok in tokens[1:]:
             tok_l = tok.lower()
-            if tok_l in ["sinusoid", "circle", "diagonal", "horizontal", "vertical", "arc", "ellipse", "vertical-s"]:
+            if tok_l in ["sinusoid", "circle", "diagonal", "horizontal", "vertical", "arc", "ellipse", "vertical-s", "spiral"]:
                 layout = tok_l
             elif "x" in tok_l:
                 res_parts = tok_l.split("x")
