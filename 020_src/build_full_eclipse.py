@@ -45,6 +45,7 @@ from scipy.ndimage import uniform_filter1d
 # Import modular external engines
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 import create_title_card as ctc
+import create_end_titles as cet
 import create_eclipse_composite as cec
 import generate_eclipse_subtitles as ges
 import eclipse_ephemeris_db as eedb
@@ -124,6 +125,14 @@ def parse_coc_filename(filepath):
                     comp_h = int(res_parts[1])
             elif tok_l.replace('.', '', 1).isdigit():
                 duration = float(tok_l)
+
+    elif primary_token in ["endtitles", "endtitle", "credits", "end"]:
+        asset_type = "endtitles"
+        duration = 6.0
+        for tok in tokens[1:]:
+            if tok.replace('.', '', 1).isdigit():
+                duration = float(tok)
+                break
 
     if asset_type is None:
         return None
@@ -1216,6 +1225,17 @@ def run_coc_pipeline(
                 master_w=master_w,
                 master_h=master_h,
                 fps=30.0, crf=16, preset="fast"
+            )
+
+        elif a_type == "endtitles":
+            print(f"Generating Closing Credits & End Titles: {raw_name} -> {out_clip_path} ({a['duration']}s)")
+            cet.generate_end_titles(
+                md_path=in_path,
+                duration_s=a['duration'],
+                width=master_w,
+                height=master_h,
+                out_dir=out_dir,
+                output_mp4=out_clip_path
             )
 
         processed_clip_paths.append(out_clip_path)

@@ -116,6 +116,7 @@ This pipeline follows **Convention over Configuration (CoC)**. Curated assets in
 | **`04_timelapse_i10.mp4`** | `timelapse` | Egress timelapse with `_i[INTERVAL]` parameter (`_i10` = 1 frame every 10s). Subpixel solar limb stabilization. | Native clip duration (speed: $10\text{s} \times 30\text{fps} = \mathbf{300\times}$) |
 | **`05_photo_6.jpg`** | `photo` | Visual still image, scaled preserving aspect ratio with clean black letterbox padding for specified duration (e.g. 6s). | 10.0s (or `_6` for 6s) |
 | **`06_composite_arc_10`** | `composite` | Generates high-resolution composite artwork mosaic on-the-fly (`arc`, `circle`, `ellipse`, `sinusoid`, `spiral`, etc.) with prominent totality contacts (`C2`, `MAX`, `C3`), scaled to project resolution (16:9 1280x720), held for specified duration (e.g. 10s). | 10.0s |
+| **`07_endtitles.md`** | `endtitles` | Markdown descriptor for closing credits and telemetry card (`# Telescope`, `# Cameras`, `# Software`, `# Author`). Renders 2x supersampled anti-aliased card with software pipeline credits and date. | 6.0s (or custom `_8` for 8s) |
 
 ---
 
@@ -152,6 +153,9 @@ This pipeline follows **Convention over Configuration (CoC)**. Curated assets in
 ├────────────────────────┤                                        ├────────────────────────┤
 │ 06_composite_arc_10    │ ───► [On-The-Fly Artwork Render]    ─► │ 06_composite_arc_10.mp4│
 │ (Mosaic Directive)     │      (Arc Mosaic + Central Contacts)   │ (10.00s @ 30 fps)      │
+├────────────────────────┤                                        ├────────────────────────┤
+│ 07_endtitles.md        │ ───► [Dynamic End Credits Render]   ─► │ 07_endtitles.mp4       │
+│ (Closing Credits Card) │      (2x Lanczos + Markdown Sections)  │ (6.00s @ 30 fps)       │
 └────────────────────────┘                                        └───────────┬────────────┘
                                                                               │
                                                                     [Master Assembly]
@@ -161,7 +165,7 @@ This pipeline follows **Convention over Configuration (CoC)**. Curated assets in
                                                                               ▼
                                                                   ┌────────────────────────┐
                                                                   │ full_eclipse.mp4       │
-                                                                  │ (172.60s @ 30 fps)     │
+                                                                  │ (181.60s @ 30 fps)     │
                                                                   └───────────┬────────────┘
                                                                               │
                                                                     [Astronomical Engine]
@@ -232,7 +236,8 @@ This generates:
 
 ```text
 Capítulos / Chapters:
-0:00 - Ingreso Parcial / Partial Ingress (Timelapse)
+0:00 - Presentación / Eclipse Overview
+0:08 - Ingreso Parcial / Partial Ingress (Timelapse)
 0:19 - Aproximación Pre-totalidad / Pre-totality (Thin Crescent)
 0:37 - C2: Anillo de Diamantes y Perlas de Baily / C2: Baily's Beads
 0:41 - Totalidad y Corona Solar / Totality (Real-Time 1x)
@@ -240,6 +245,7 @@ Capítulos / Chapters:
 2:22 - Egreso Parcial / Partial Egress (Timelapse)
 2:33 - Fotografía HDR de la Corona / Solar Corona Photo
 2:42 - Mosaico Secuencia del Eclipse / Eclipse Sequence Composite (Arc)
+2:55 - Créditos Finales / Closing Credits
 ```
 
 ### 3. Observational vs. Ephemeris Comparison Report
@@ -301,7 +307,36 @@ python 020_src/create_eclipse_composite.py --layout circle --size 3840 --no-cont
 python 020_src/create_eclipse_composite.py --layout all --contacts --show-labels
 ```
 
-### 6. Ephemeris Database CLI & Refresh
+### 6. Standalone Closing Credits & End Titles Generator (`create_end_titles.py`)
+Generates an anti-aliased, 2x supersampled closing credits card and video clip from a markdown file (e.g. `010_in/07_endtitles.md`):
+
+```bash
+# Generate 6.0s closing credits clip from markdown descriptor:
+python 020_src/create_end_titles.py -i 010_in/07_endtitles.md --duration 6.0
+
+# Generate for custom 4K resolution:
+python 020_src/create_end_titles.py -i 010_in/07_endtitles.md -W 3840 -H 2160 -o 040_out/07_endtitles_4k.mp4
+```
+
+Example markdown descriptor (`010_in/07_endtitles.md`):
+```markdown
+# Telescope
+DWARF mini
+# Cameras
+Lumix GH6
+# Software
+AI Scaling: Topaz Video AI Rhea
+# Author
+Nandoide
+```
+
+The engine automatically:
+- Parses markdown headers into elegant uppercase section labels (`TELESCOPE`, `CAMERAS`, `SOFTWARE`, `AUTHOR`).
+- Harmonizes pipeline software attribution (`Processing: eclipse-assembler`) in identical style and typography as user tools (`AI Upscaling: Topaz Video 1.7.0 (Rhea)`).
+- Appends the generation/observation date (`DATE`) formatted uniformly.
+- Renders at 2x resolution with Lanczos downsampling on solid black canvas.
+
+### 7. Ephemeris Database CLI & Refresh
 ```bash
 # Query ephemeris contacts for auto-detected date:
 python 020_src/eclipse_ephemeris_db.py
@@ -313,13 +348,13 @@ python 020_src/eclipse_ephemeris_db.py --date 2026-08-12
 python 020_src/eclipse_ephemeris_db.py --force-db
 ```
 
-### 7. Lightweight 30-Second Compact Video (for Easy Sharing)
+### 8. Lightweight 30-Second Compact Video (for Easy Sharing)
 Generates an accelerated, universally compatible 30-second version in H.264 (~1.19 MB in 720p HD) for quick distribution via messaging apps (WhatsApp, Telegram) or social media:
 ```bash
 python 020_src/create_compact_clip.py
 ```
 
-### 8. Force Re-processing from Scratch
+### 9. Force Re-processing from Scratch
 ```bash
 python 020_src/build_full_eclipse.py --force-all
 ```
@@ -342,14 +377,16 @@ eclipse_assembler/
 │   ├── 03_video_realtime.mp4         # Totality real-time continuous video (1x)
 │   ├── 04_timelapse_i10.mp4          # Egress time-lapse (1 frame every 10s)
 │   ├── 05_photo_6.jpg                # Still photograph (6s hold)
-│   └── 06_composite_arc_10           # On-the-fly composite mosaic (10s hold)
+│   ├── 06_composite_arc_10           # On-the-fly composite mosaic (10s hold)
+│   └── 07_endtitles.md               # Closing credits descriptor (6s hold)
 │
 ├── 020_src/                          # Python source code
 │   ├── build_full_eclipse.py         # ★ CoC Master pipeline and assembly script
 │   ├── eclipse_ephemeris_db.py       # ★ Universal Solar/Lunar Besselian database & solver
 │   ├── fetch_eclipses_horizons.py    # ★ NASA JPL Horizons API fetcher & DB builder (2026-2036)
 │   ├── compare_contacts_ephemeris.py # ★ Observational telemetry vs. NASA ephemeris comparison
-│   ├── create_title_card.py          # ★ Cinematic title card generator (00_title.mp4)
+│   ├── create_title_card.py          # ★ Cinematic opening title card generator (00_title.mp4)
+│   ├── create_end_titles.py          # ★ Cinematic closing credits generator (07_endtitles.mp4)
 │   ├── generate_eclipse_subtitles.py # ★ 100% RAW-based multilingual subtitle & YouTube chapters generator
 │   ├── create_eclipse_composite.py   # ★ High-resolution composite mosaic generator & JSON metadata
 │   ├── create_compact_clip.py        # 30s accelerated lightweight generator
@@ -369,7 +406,9 @@ eclipse_assembler/
 │   ├── 05_photo_6.mp4                # Letterboxed photo video (6.00s)
 │   ├── 06_composite_arc_10.mp4       # 16:9 composite arc video with contacts (10.00s)
 │   ├── 06_composite_arc_10.json      # 📋 Frame timestamps metadata for composite
-│   ├── full_eclipse.mp4              # ★ Complete master film (172.60s)
+│   ├── 07_endtitles.mp4              # Closing credits video clip (6.00s)
+│   ├── 07_endtitles.jpg              # High-resolution closing credits graphic
+│   ├── full_eclipse.mp4              # ★ Complete master film (181.60s)
 │   ├── full_eclipse_subtitled.mp4    # 🍎 Master film with embedded QuickTime subtitles (ES + EN)
 │   ├── full_eclipse_es.srt           # 🇪🇸 Spanish subtitles (YouTube / VLC)
 │   ├── full_eclipse_en.srt           # 🇬🇧 English subtitles (YouTube / VLC)
@@ -401,11 +440,12 @@ eclipse_assembler/
 | **`04_timelapse_i10.mp4`** | 1280x720 | 30.0 fps | 8.20s (2.66 MB) | Stabilized partial egress ($R = 237.5\text{ px}$, speed x300) |
 | **`05_photo_6.mp4`** | 1280x720 | 30.0 fps | 6.00s (0.12 MB) | Still photo scaled with black letterboxing |
 | **`06_composite_arc_10.mp4`** | 1280x720 | 30.0 fps | 10.00s (0.05 MB) | Native 16:9 arc mosaic clip with prominent contacts |
-| **`full_eclipse.mp4`** | **1280x720** | **30.0 fps** | **172.60s (12.46 MB)** | 🎬 **Master film with title card & cinematic transitions** |
-| **`full_eclipse_subtitled.mp4`** | **1280x720** | **30.0 fps** | **172.60s (12.48 MB)** | 🍎 **Master film with dual embedded QuickTime tracks (`mov_text`)** |
-| **`full_eclipse_es.srt`** | SubRip | UTF-8 | 48 entries | 🇪🇸 **Astronomical subtitles in Spanish with speed multipliers** |
-| **`full_eclipse_en.srt`** | SubRip | UTF-8 | 48 entries | 🇬🇧 **Astronomical subtitles in English with speed multipliers** |
-| **`youtube_chapters.txt`** | Plain Text | UTF-8 | 8 chapters | 📺 **YouTube chapters formatted for video timestamps** |
+| **`07_endtitles.mp4`** | 1280x720 | 30.0 fps | 6.00s (0.07 MB) | Closing credits and production telemetry card |
+| **`full_eclipse.mp4`** | **1280x720** | **30.0 fps** | **181.60s (12.56 MB)** | 🎬 **Master film with title card, credits & cinematic transitions** |
+| **`full_eclipse_subtitled.mp4`** | **1280x720** | **30.0 fps** | **181.60s (12.58 MB)** | 🍎 **Master film with dual embedded QuickTime tracks (`mov_text`)** |
+| **`full_eclipse_es.srt`** | SubRip | UTF-8 | 52 entries | 🇪🇸 **Astronomical subtitles in Spanish with speed multipliers** |
+| **`full_eclipse_en.srt`** | SubRip | UTF-8 | 52 entries | 🇬🇧 **Astronomical subtitles in English with speed multipliers** |
+| **`youtube_chapters.txt`** | Plain Text | UTF-8 | 9 chapters | 📺 **YouTube chapters formatted for video timestamps** |
 | **`youtube_description.txt`** | Plain Text | UTF-8 | Description | 📝 **Ready-to-paste YouTube description with ephemeris & chapters** |
 
 ---

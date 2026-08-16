@@ -310,9 +310,10 @@ ffmpeg -y -i 040_out/full_eclipse.mp4 \
 
 ### 5.3 YouTube Chapter & Description Export
 
-The pipeline automatically outputs ready-to-paste YouTube metadata:
-- **`040_out/youtube_chapters.txt`**: Timestamped chapter list.
+The pipeline automatically outputs ready-to-paste YouTube metadata and embeds native chapters:
+- **`040_out/youtube_chapters.txt`**: Timestamped chapter list for YouTube.
 - **`040_out/youtube_description.txt`**: Full astronomical description, observation site coordinates, telescope hardware telemetry, and contact times.
+- **`040_out/full_eclipse_subtitled.mp4`**: Contains embedded QuickTime/MP4 chapters (`chpl` / `udta`) and dual multilingual subtitle tracks (`spa` & `eng`) navigable in QuickTime Player, VLC, and Apple TV.
 
 ---
 
@@ -396,7 +397,17 @@ Supported render sizes range from 720p up to **8K (7680x7680)** and **16K (15360
 
 ---
 
-## 8. Master Film Concatenation & H.265 Broadcast Encoding
+## 8. Cinematic Closing Credits & Production Telemetry Engine
+
+`020_src/create_end_titles.py` generates an anti-aliased closing credits card and video clip (`07_endtitles.mp4`) when a markdown descriptor (e.g., `010_in/07_endtitles.md`) is provided in the input directory:
+- **Dynamic Markdown Parsing**: Extends to custom categories (`# Telescope`, `# Cameras`, `# Software`, `# Author`, `# Observation Site`).
+- **Software Pipeline Harmonization**: Automatically includes and standardizes pipeline processing attribution (`Processing: eclipse-assembler`) alongside custom post-processing tools (`AI Upscaling: Topaz Video 1.7.0 (Rhea)`).
+- **Unified Visual Hierarchy**: 2x supersampled PIL rasterization downsampled with Lanczos filtering on solid black canvas, maintaining identical typography and color palette across all sections.
+- **Date Standardization**: Automatically appends the project observation / generation date formatted cleanly as a dedicated metadata block.
+
+---
+
+## 9. Master Film Concatenation & H.265 Broadcast Encoding
 
 `020_src/build_full_eclipse.py` orchestrates the complete assembly:
 
@@ -412,7 +423,7 @@ Supported render sizes range from 720p up to **8K (7680x7680)** and **16K (15360
 
 ---
 
-## 9. Step-by-Step Recipes & CLI Reference
+## 10. Step-by-Step Recipes & CLI Reference
 
 ### Environment Setup
 ```bash

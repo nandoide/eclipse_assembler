@@ -245,6 +245,12 @@ def build_timeline_mapping(
                 for tok in tokens[1:]:
                     if tok.replace('.', '', 1).isdigit():
                         duration = float(tok)
+            elif primary in ["endtitles", "endtitle", "credits", "end"]:
+                a_type = "endtitles"
+                duration = 6.0
+                for tok in tokens[1:]:
+                    if tok.replace('.', '', 1).isdigit():
+                        duration = float(tok)
 
             discovered.append({
                 "index": idx,
@@ -374,6 +380,12 @@ def build_timeline_mapping(
             speed_factor = None
             seg_type_name = "composite"
 
+        elif ctype == "endtitles":
+            seg_dt_start = dt_egress_start + datetime.timedelta(seconds=246 * 10.0)
+            seg_dt_end = seg_dt_start
+            speed_factor = None
+            seg_type_name = "endtitles"
+
         else:  # title_card
             seg_dt_start = dt_ingress_start
             seg_dt_end = dt_ingress_start
@@ -383,7 +395,7 @@ def build_timeline_mapping(
         real_span_s = (seg_dt_end - seg_dt_start).total_seconds()
         if ctype == "video_realtime":
             speed_factor = 1.0
-        elif ctype in ["title_card", "photo_corona", "composite"]:
+        elif ctype in ["title_card", "photo_corona", "composite", "endtitles"]:
             speed_factor = None
         else:
             speed_factor = real_span_s / max(clip_dur, 0.1)
@@ -427,10 +439,8 @@ def get_astronomical_state_at(t: float, segments: list, c2_point: float, c3_poin
             else:
                 speed_str = f"speed x{round(speed)}" if speed and speed > 1.0 else "speed x1 Real-Time"
 
-            if stype == "title_card":
-                clock_str = seg['dt_start'].strftime("%H:%M:%S")
-                phase_str = "Presentación del Eclipse" if is_es else "Eclipse Overview & Telemetry"
-                return clock_str, phase_str
+            if stype in ["title_card", "endtitles"]:
+                return None, None
 
             elif stype == "timelapse_ingress":
                 real_seconds = frac * (seg['dt_end'] - seg['dt_start']).total_seconds()
@@ -485,11 +495,11 @@ def get_astronomical_state_at(t: float, segments: list, c2_point: float, c3_poin
                 return clock_str, phase_str
 
             elif stype == "transition":
-                p_type = seg['prev_type']
+                p_type = seg.get('prev_type')
+                if p_type in ["title_card", "composite", "endtitles"]:
+                    return None, None
                 clock_str = seg['dt_start'].strftime("%H:%M:%S")
-                if p_type == "title_card":
-                    phase_str = "Inicio del Metraje" if is_es else "Film Sequence Start"
-                elif p_type == "timelapse_ingress":
+                if p_type == "timelapse_ingress":
                     phase_str = f"C1->C2: Ingreso Parcial ({speed_str})" if is_es else f"C1->C2: Partial Ingress ({speed_str})"
                 elif p_type == "video_slowdown":
                     phase_str = f"C1->C2: Pre-Totalidad ({speed_str})" if is_es else f"C1->C2: Pre-Totality ({speed_str})"
@@ -500,11 +510,10 @@ def get_astronomical_state_at(t: float, segments: list, c2_point: float, c3_poin
                 elif p_type == "photo_corona":
                     phase_str = "Corona Solar (Totalidad)" if is_es else "Solar Corona (Totality)"
                 else:
-                    phase_str = f"Totalidad ({speed_str})" if is_es else f"Totality ({speed_str})"
+                    return None, None
                 return clock_str, phase_str
 
-    fallback_title = "Totalidad (velocidad x1 Tiempo Real)" if is_es else "Totality (speed x1 Real-Time)"
-    return "20:28:23", fallback_title
+    return None, None
 
 
 def generate_single_srt(
@@ -558,6 +567,9 @@ def generate_single_srt(
             lang=lang, timezone=timezone, out_dir=out_dir, date_str=date_str
         )
 
+        if clock_str is None or phase_str is None:
+            continue
+
         if include_phase:
             line_text = f"{clock_str} {timezone} - {phase_str}"
         else:
@@ -576,32 +588,78 @@ def generate_single_srt(
     return len(srt_entries)
 
 
+def export_ffmetadata_chapters(
+    chapters: list,
+    total_film_dur: float,
+    out_path: str
+):
+    """
+    Writes an FFmpeg metadata file with chapters for native MP4/QuickTime embedding.
+    """
+    lines = [";FFMETADATA1"]
+    for i in range(len(chapters)):
+        start_sec = chapters[i][0]
+        title = chapters[i][2]
+        if i + 1 < len(chapters):
+            end_sec = chapters[i + 1][0]
+        else:
+            end_sec = total_film_dur
+
+        start_ms = int(round(start_sec * 1000))
+        end_ms = max(start_ms + 100, int(round(end_sec * 1000)))
+
+        lines.append("[CHAPTER]")
+        lines.append("TIMEBASE=1/1000")
+        lines.append(f"START={start_ms}")
+        lines.append(f"END={end_ms}")
+        lines.append(f"title={title}")
+
+    os.makedirs(os.path.dirname(os.path.abspath(out_path)), exist_ok=True)
+    with open(out_path, "w", encoding="utf-8") as f:
+        f.write("\n".join(lines) + "\n")
+
+
 def embed_subtitles_for_quicktime(
     video_path: str,
     srt_es: str,
     srt_en: str,
-    output_mp4: str
+    output_mp4: str,
+    chapters_metadata_path: str = None
 ):
     """
-    Muxes both Spanish and English subtitle tracks into MP4 using QuickTime-compatible
-    'mov_text' codec with lossless video/audio stream copy.
+    Muxes both Spanish and English subtitle tracks and embeds native MP4 chapter markers
+    into MP4 using QuickTime-compatible 'mov_text' codec with lossless stream copy.
     """
     print("-----------------------------------------------------------------")
-    print("EMBEDDING QUICKTIME SUBTITLE TRACKS (Lossless Stream Copy)...")
+    print("EMBEDDING QUICKTIME SUBTITLE TRACKS & CHAPTERS (Lossless Stream Copy)...")
     print(f"  Source Video : {video_path}")
     print(f"  Track 1 [ES] : {srt_es}")
     print(f"  Track 2 [EN] : {srt_en}")
+    if chapters_metadata_path and os.path.exists(chapters_metadata_path):
+        print(f"  Chapters Met : {chapters_metadata_path}")
     print(f"  Target Video : {output_mp4}")
     print("-----------------------------------------------------------------")
 
-    cmd = [
-        "ffmpeg", "-y",
-        "-i", video_path,
-        "-i", srt_es,
-        "-i", srt_en,
-        "-map", "0:v",
-        "-map", "1:0",
-        "-map", "2:0",
+    cmd = ["ffmpeg", "-y", "-i", video_path]
+
+    if chapters_metadata_path and os.path.exists(chapters_metadata_path):
+        cmd.extend(["-i", chapters_metadata_path])
+        cmd.extend(["-i", srt_es, "-i", srt_en])
+        cmd.extend([
+            "-map", "0:v",
+            "-map_chapters", "1",
+            "-map", "2:0",
+            "-map", "3:0",
+        ])
+    else:
+        cmd.extend(["-i", srt_es, "-i", srt_en])
+        cmd.extend([
+            "-map", "0:v",
+            "-map", "1:0",
+            "-map", "2:0",
+        ])
+
+    cmd.extend([
         "-c:v", "copy",
         "-c:s", "mov_text",
         "-metadata:s:s:0", "language=spa",
@@ -612,7 +670,7 @@ def embed_subtitles_for_quicktime(
         "-metadata:s:s:1", "handler_name=English",
         "-disposition:s:0", "default",
         output_mp4
-    ]
+    ])
 
     subprocess.run(cmd, check=True)
     print(f"SUCCESS: QuickTime-ready MP4 created at: {output_mp4}")
@@ -646,15 +704,13 @@ def generate_youtube_metadata(
         stype = s["type"]
 
         if stype == "title_card":
-            if not any(c[0] == 0 for c in chapters_bilingual):
-                chapters_bilingual.append((0, "0:00", "Ingreso Parcial / Partial Ingress (Timelapse)"))
-                chapters_es.append((0, "0:00", "Ingreso Parcial (Timelapse)"))
-                chapters_en.append((0, "0:00", "Partial Ingress (Timelapse)"))
+            chapters_bilingual.append((st, t_str, "Presentación / Eclipse Overview"))
+            chapters_es.append((st, t_str, "Presentación del Eclipse"))
+            chapters_en.append((st, t_str, "Eclipse Overview & Ephemeris"))
         elif stype == "timelapse_ingress":
-            if not any(c[0] == 0 for c in chapters_bilingual):
-                chapters_bilingual.append((0, "0:00", "Ingreso Parcial / Partial Ingress (Timelapse)"))
-                chapters_es.append((0, "0:00", "Ingreso Parcial (Timelapse)"))
-                chapters_en.append((0, "0:00", "Partial Ingress (Timelapse)"))
+            chapters_bilingual.append((st, t_str, "Ingreso Parcial / Partial Ingress (Timelapse)"))
+            chapters_es.append((st, t_str, "Ingreso Parcial (Timelapse)"))
+            chapters_en.append((st, t_str, "Partial Ingress (Timelapse)"))
         elif stype == "video_slowdown":
             chapters_bilingual.append((st, t_str, "Aproximación Pre-totalidad / Pre-totality (Thin Crescent)"))
             chapters_es.append((st, t_str, "Aproximación Pre-totalidad (Fase Creciente Fina)"))
@@ -689,11 +745,21 @@ def generate_youtube_metadata(
             chapters_bilingual.append((st, t_str, "Mosaico Secuencia del Eclipse / Eclipse Sequence Composite (Arc)"))
             chapters_es.append((st, t_str, "Mosaico Secuencia del Eclipse (Arco con Contactos)"))
             chapters_en.append((st, t_str, "Eclipse Sequence Composite Artwork (Arc)"))
+        elif stype == "endtitles":
+            chapters_bilingual.append((st, t_str, "Créditos Finales / Closing Credits"))
+            chapters_es.append((st, t_str, "Créditos Finales y Producción"))
+            chapters_en.append((st, t_str, "Closing Credits & Production Telemetry"))
 
     # Sort chapters by timestamp
     chapters_bilingual.sort(key=lambda x: x[0])
     chapters_es.sort(key=lambda x: x[0])
     chapters_en.sort(key=lambda x: x[0])
+
+    # Ensure a chapter starts at 0.0 (required for YouTube chapters)
+    if chapters_bilingual and chapters_bilingual[0][0] > 0.05:
+        chapters_bilingual.insert(0, (0.0, "0:00", "Presentación / Eclipse Overview"))
+        chapters_es.insert(0, (0.0, "0:00", "Presentación del Eclipse"))
+        chapters_en.insert(0, (0.0, "0:00", "Eclipse Overview & Ephemeris"))
 
     # Text content for youtube_chapters.txt
     lines = []
@@ -866,17 +932,6 @@ def generate_eclipse_subtitles_pipeline(
     for l_name, p, n in generated_files:
         print(f"  [{l_name}] ({n} entries) -> {p}")
 
-    # Optional QuickTime MP4 embedding
-    if embed and os.path.exists(path_es) and os.path.exists(path_en):
-        v_base, v_ext = os.path.splitext(video_path)
-        subtitled_video_path = f"{v_base}_subtitled{v_ext}"
-        embed_subtitles_for_quicktime(
-            video_path=video_path,
-            srt_es=path_es,
-            srt_en=path_en,
-            output_mp4=subtitled_video_path
-        )
-
     # Generate YouTube chapters and description metadata
     yt_chaps, yt_chap_p, yt_desc_p = generate_youtube_metadata(
         segments=segments,
@@ -893,6 +948,22 @@ def generate_eclipse_subtitles_pipeline(
     print("-----------------------------------------------------------------")
     for _, t, name in yt_chaps:
         print(f"  {t} - {name}")
+
+    # Export FFmpeg chapter metadata for native MP4 / QuickTime embedding
+    meta_chap_p = os.path.join(out_dir, "metadata_chapters.txt")
+    export_ffmetadata_chapters(yt_chaps, total_film_dur, meta_chap_p)
+
+    # Optional QuickTime MP4 embedding (Subtitles + Native Chapters)
+    if embed and os.path.exists(path_es) and os.path.exists(path_en):
+        v_base, v_ext = os.path.splitext(video_path)
+        subtitled_video_path = f"{v_base}_subtitled{v_ext}"
+        embed_subtitles_for_quicktime(
+            video_path=video_path,
+            srt_es=path_es,
+            srt_en=path_en,
+            output_mp4=subtitled_video_path,
+            chapters_metadata_path=meta_chap_p
+        )
 
     print("=================================================================")
     return [p for _, p, _ in generated_files]
