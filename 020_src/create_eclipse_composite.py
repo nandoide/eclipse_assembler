@@ -909,9 +909,9 @@ def generate_arc_composite(samples, width=1280, height=720, margin_x=None, disk_
 
 def generate_spiral_composite(samples, width=3840, height=3840, turns=1.65, power=0.88, direction="cw", disk_scale_factor=0.78, show_labels=False):
     """
-    Generates an expanding Archimedean/power spiral progression starting directly at
-    the canvas center (Frame 0) and winding outwards to the canvas perimeter.
-    Designed exclusively for square frames (e.g. 3840x3840) to fill the space
+    Generates an inward Archimedean/power spiral progression starting at the
+    outer canvas perimeter (Frame 0) and winding inwards to the canvas center (Frame N-1).
+    Designed exclusively for square frames (e.g. 3840p, 7680p 8K) to fill the space
     harmoniously with equal arc-length spacing between consecutive disks.
     Central featured contacts are disabled for this layout.
     """
@@ -926,9 +926,10 @@ def generate_spiral_composite(samples, width=3840, height=3840, turns=1.65, powe
 
     theta_max = turns * 2.0 * math.pi
     dense_theta = np.linspace(0.0, theta_max, 3000)
-    dense_r = ((dense_theta / theta_max) ** power) * r_max
+    # Starts at outer radius r_max and winds inward to center (r=0)
+    dense_r = (((theta_max - dense_theta) / theta_max) ** power) * r_max
 
-    # Starting angle: pointing straight up (-pi/2) and spiraling outward
+    # Starting angle: pointing straight up (-pi/2) at outer edge, spiraling inward
     if direction == "ccw":
         dense_x = cx + dense_r * np.cos(-dense_theta - math.pi / 2.0)
         dense_y = cy + dense_r * np.sin(-dense_theta - math.pi / 2.0)
