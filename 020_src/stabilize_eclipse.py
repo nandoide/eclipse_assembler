@@ -63,40 +63,41 @@ def extract_pure_solar_limb(gray_img: np.ndarray, thresh_val: int = None) -> np.
     return np.array(limb_pts, dtype=np.float32)
 
 
-def find_circle_center_fixed_r(pts: np.ndarray, r_fixed: float = 237.5) -> tuple[float, float]:
+def find_circle_center_fixed_r(pts: np.ndarray, r_fixed: float = 237.5, ry_fixed: float = None) -> tuple[float, float]:
     """
-    Finds the exact (cx, cy) center on circular arc points given fixed solar radius.
-    Minimizes Huber loss: sum rho( ||p_i - c|| - r_fixed )
+    Finds the exact (cx, cy) center on circular or oblate arc points given fixed semi-axes.
+    Minimizes trimmed Huber loss to reject cloud artifacts and chord outliers.
     """
     if len(pts) < 5:
         return 640.0, 360.0
 
+    if ry_fixed is None:
+        ry_fixed = r_fixed
+
     best_c = (640.0, 360.0)
-    best_res = 1e9
+    curr_pts = pts
+    for iter_step in range(3):
+        def loss(c):
+            cx, cy = c
+            d = np.sqrt(((curr_pts[:, 0] - cx) / r_fixed)**2 + ((curr_pts[:, 1] - cy) / ry_fixed)**2)
+            err = np.abs(d - 1.0) * r_fixed
+            return np.sum(np.where(err < 2.0, 0.5 * err**2, 2.0 * (err - 1.0)))
 
-    cxs = np.linspace(550.0, 850.0, 61)
-    cys = np.linspace(280.0, 480.0, 41)
+        opt = minimize(loss, [best_c[0], best_c[1]], method='Nelder-Mead', options={'xatol': 0.0005, 'fatol': 0.005})
+        if opt.success:
+            best_c = (float(opt.x[0]), float(opt.x[1]))
+            d = np.sqrt(((curr_pts[:, 0] - best_c[0]) / r_fixed)**2 + ((curr_pts[:, 1] - best_c[1]) / ry_fixed)**2)
+            err = np.abs(d - 1.0) * r_fixed
+            inliers = err < 2.5
+            if np.sum(inliers) >= 15:
+                curr_pts = curr_pts[inliers]
 
-    for cy in cys:
-        for cx in cxs:
-            dists = np.hypot(pts[:, 0] - cx, pts[:, 1] - cy)
-            res = np.sum((dists - r_fixed)**2)
-            if res < best_res:
-                best_res = res
-                best_c = (cx, cy)
-
-    def loss(c):
-        dists = np.hypot(pts[:, 0] - c[0], pts[:, 1] - c[1])
-        err = np.abs(dists - r_fixed)
-        return np.sum(np.where(err < 4.0, 0.5 * err**2, 4.0 * (err - 2.0)))
-
-    opt = minimize(loss, best_c, method='Nelder-Mead', options={'xatol': 0.001, 'fatol': 0.01})
-    return float(opt.x[0]), float(opt.x[1])
+    return best_c[0], best_c[1]
 
 
 def track_video_trajectory(video_path: str, r_fixed: float = 237.5):
     """
-    Tracks the exact solar center (cx, cy) for every frame.
+    Tracks the exact solar center (cx, cy) for every frame with oblate atmospheric correction.
     """
     cap = cv2.VideoCapture(video_path)
     total_frames = int(cap.get(cv2.CAP_PROP_FRAME_COUNT))
@@ -105,15 +106,37 @@ def track_video_trajectory(video_path: str, r_fixed: float = 237.5):
 
     print(f"Tracking solar center across {total_frames} frames in {video_path}...")
 
-    for _ in tqdm(range(total_frames), desc="Analyzing solar limb"):
+    for idx in tqdm(range(total_frames), desc="Analyzing solar limb"):
         ret, frame = cap.read()
         if not ret:
             break
         frames.append(frame)
         gray = cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY)
-        limb = extract_pure_solar_limb(gray)
-        cx, cy = find_circle_center_fixed_r(limb, r_fixed=r_fixed)
-        centers.append((cx, cy))
+        max_val = float(np.max(gray))
+        
+        all_pts = []
+        for pct in [0.20, 0.35, 0.50]:
+            th_val = max(15, min(90, int(pct * max_val)))
+            _, binary = cv2.threshold(gray, th_val, 255, cv2.THRESH_BINARY)
+            contours, _ = cv2.findContours(binary, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_NONE)
+            if contours:
+                cnt = max(contours, key=cv2.contourArea).reshape(-1, 2)
+                hull = cv2.convexHull(cnt, returnPoints=True).reshape(-1, 2)
+                tree = cv2.BFMatcher(cv2.NORM_L2)
+                matches = tree.match(hull.astype(np.float32), cnt.astype(np.float32))
+                pure = np.array([hull[m.queryIdx] for m in matches if m.distance < 1.5], dtype=np.float32)
+                if len(pure) >= 5:
+                    all_pts.append(pure)
+        
+        progress = idx / float(max(1, total_frames - 1))
+        ry_target = r_fixed * (1.0 - 0.042 * progress)
+        
+        if all_pts:
+            pts = np.vstack(all_pts)
+            cx, cy = find_circle_center_fixed_r(pts, r_fixed=r_fixed, ry_fixed=ry_target)
+            centers.append((cx, cy))
+        else:
+            centers.append(centers[-1] if centers else (640.0, 360.0))
 
     cap.release()
     return frames, np.array(centers, dtype=np.float32)

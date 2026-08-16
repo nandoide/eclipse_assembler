@@ -115,7 +115,7 @@ This pipeline follows **Convention over Configuration (CoC)**. Curated assets in
 | **`03_video_realtime.mp4`** | `video_realtime` | Continuous 1x real-time video (30 fps) with lunar silhouette, corona, and Baily's beads tracking. Preserves exact 1:1 real-time duration. | Native real duration ($\mathbf{1\times}$ Real-Time) |
 | **`04_timelapse_i10.mp4`** | `timelapse` | Egress timelapse with `_i[INTERVAL]` parameter (`_i10` = 1 frame every 10s). Subpixel solar limb stabilization. | Native clip duration (speed: $10\text{s} \times 30\text{fps} = \mathbf{300\times}$) |
 | **`05_photo_6.jpg`** | `photo` | Visual still image, scaled preserving aspect ratio with clean black letterbox padding for specified duration (e.g. 6s). | 10.0s (or `_6` for 6s) |
-| **`06_composite_arc_10`** | `composite` | Generates high-resolution composite artwork mosaic on-the-fly (`arc`, `circle`, `ellipse`, `sinusoid`, etc.) with prominent totality contacts (`C2`, `TOTAL`, `C3`), scaled to project resolution (16:9 1280x720), held for specified duration (e.g. 10s). | 10.0s |
+| **`06_composite_arc_10`** | `composite` | Generates high-resolution composite artwork mosaic on-the-fly (`arc`, `circle`, `ellipse`, `sinusoid`, `spiral`, etc.) with prominent totality contacts (`C2`, `MAX`, `C3`), scaled to project resolution (16:9 1280x720), held for specified duration (e.g. 10s). | 10.0s |
 
 ---
 

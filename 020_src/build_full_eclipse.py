@@ -291,25 +291,71 @@ def stabilize_timelapse_asset(
     if r_fixed is None:
         r_fixed = 238.0 * scale_factor
 
-    # Pass 1: Extract pure solar limb & find exact circle center
+    # Pass 1: Extract pure solar limb & find exact oblate center with trimmed inlier optimization
     cap = cv2.VideoCapture(in_path)
     frames = []
-    centers = []
-    pbar = tqdm(total=total_frames, desc=f"Stabilizing {os.path.basename(in_path)}")
-
     for _ in range(total_frames):
         ret, frame = cap.read()
         if not ret:
             break
         frames.append(frame)
-        gray = cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY)
-        limb = extract_pure_solar_limb(gray)
-        cx, cy = find_circle_center_fixed_r(limb, r_fixed=r_fixed)
-        centers.append((cx, cy))
-        pbar.update(1)
-
     cap.release()
-    pbar.close()
+
+    N = len(frames)
+    centers = []
+    last_valid = (cx_target, cy_target)
+
+    for idx, frame in enumerate(tqdm(frames, desc=f"Stabilizing {os.path.basename(in_path)}")):
+        gray = cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY)
+        max_val = float(np.max(gray))
+        if max_val < 20:
+            centers.append(last_valid)
+            continue
+
+        # Multi-threshold ensemble to capture true outer limb across cloud transits
+        all_pts = []
+        for pct in [0.20, 0.35, 0.50]:
+            th_val = max(15, min(90, int(pct * max_val)))
+            _, binary = cv2.threshold(gray, th_val, 255, cv2.THRESH_BINARY)
+            contours, _ = cv2.findContours(binary, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_NONE)
+            if contours:
+                cnt = max(contours, key=cv2.contourArea).reshape(-1, 2)
+                hull = cv2.convexHull(cnt, returnPoints=True).reshape(-1, 2)
+                tree = cv2.BFMatcher(cv2.NORM_L2)
+                matches = tree.match(hull.astype(np.float32), cnt.astype(np.float32))
+                pure = np.array([hull[m.queryIdx] for m in matches if m.distance < 1.5], dtype=np.float32)
+                if len(pure) >= 5:
+                    all_pts.append(pure)
+
+        if not all_pts:
+            centers.append(last_valid)
+            continue
+
+        pts = np.vstack(all_pts)
+        progress = idx / float(max(1, N - 1))
+        # Atmospheric refraction compresses vertical semi-axis progressively near horizon
+        ry_target = r_fixed * (1.0 - 0.042 * progress)
+
+        curr_pts = pts
+        curr_c = last_valid
+        for iter_step in range(3):
+            def loss(c):
+                cx, cy = c
+                d = np.sqrt(((curr_pts[:, 0] - cx) / r_fixed)**2 + ((curr_pts[:, 1] - cy) / ry_target)**2)
+                err = np.abs(d - 1.0) * r_fixed
+                return np.sum(np.where(err < 2.0, 0.5 * err**2, 2.0 * (err - 1.0)))
+
+            res = minimize(loss, [curr_c[0], curr_c[1]], method='Nelder-Mead', options={'xatol': 0.0005, 'fatol': 0.005})
+            if res.success:
+                curr_c = (float(res.x[0]), float(res.x[1]))
+                d = np.sqrt(((curr_pts[:, 0] - curr_c[0]) / r_fixed)**2 + ((curr_pts[:, 1] - curr_c[1]) / ry_target)**2)
+                err = np.abs(d - 1.0) * r_fixed
+                inliers = err < 2.5
+                if np.sum(inliers) >= 15:
+                    curr_pts = curr_pts[inliers]
+
+        last_valid = curr_c
+        centers.append(last_valid)
 
     # Pass 2: Warp and encode
     ffmpeg_cmd = [
@@ -425,42 +471,67 @@ def process_video_slowdown_asset(
 
     sampled_frames = [sampled_frames_dict[i] for i in sampled_raw_indices]
 
-    # 3. Track solar limb center with Nelder-Mead
+    # 3. Track solar limb center with Iterative Trimmed Inlier Estimator (Fixed Oblate Geometry)
+    rx_fixed = solar_radius
     centers = []
     last_valid_center = (cx_target, cy_target)
+    n_frames = len(sampled_frames)
 
     for idx, frame in enumerate(tqdm(sampled_frames, desc="3/3 Tracking solar limb")):
         gray = cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY)
         max_val = float(np.max(gray))
-        th_val = max(20, min(80, int(0.35 * max_val)))
-        _, binary = cv2.threshold(gray, th_val, 255, cv2.THRESH_BINARY)
-        contours, _ = cv2.findContours(binary, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_NONE)
-
-        if not contours or idx >= len(sampled_frames) - 10:
+        if max_val < 20:
             centers.append(last_valid_center)
             continue
 
-        cnt = max(contours, key=cv2.contourArea)
-        pts = cnt.reshape(-1, 2)
-        hull = cv2.convexHull(pts).reshape(-1, 2)
+        # Multi-threshold ensemble to capture true outer limb across cloud transits
+        all_limb_pts = []
+        for pct in [0.20, 0.35, 0.50]:
+            th_val = max(15, min(90, int(pct * max_val)))
+            _, binary = cv2.threshold(gray, th_val, 255, cv2.THRESH_BINARY)
+            contours, _ = cv2.findContours(binary, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_NONE)
+            if contours:
+                cnt = max(contours, key=cv2.contourArea).reshape(-1, 2)
+                hull = cv2.convexHull(cnt, returnPoints=True).reshape(-1, 2)
+                tree = cv2.BFMatcher(cv2.NORM_L2)
+                matches = tree.match(hull.astype(np.float32), cnt.astype(np.float32))
+                pure = np.array([hull[m.queryIdx] for m in matches if m.distance < 1.5], dtype=np.float32)
+                if len(pure) >= 5:
+                    all_limb_pts.append(pure)
 
-        if len(hull) < 20:
+        if not all_limb_pts:
             centers.append(last_valid_center)
             continue
 
-        def cost(center):
-            cx, cy = center
-            d = np.sqrt((hull[:, 0] - cx)**2 + (hull[:, 1] - cy)**2)
-            err = np.abs(d - solar_radius)
-            return np.sum(np.where(err < 4.0, 0.5 * err**2, 4.0 * (err - 2.0)))
+        pts = np.vstack(all_limb_pts)
+        progress = idx / float(max(1, n_frames - 1))
+        # Atmospheric refraction compresses the vertical semi-axis progressively near the horizon
+        ry_target = rx_fixed * (1.0 - 0.042 * progress)
 
-        init_cx, init_cy = last_valid_center
-        res = minimize(cost, [init_cx, init_cy], method='Nelder-Mead')
-        if res.success and (cx_target - 150) < res.x[0] < (cx_target + 150) and (cy_target - 150) < res.x[1] < (cy_target + 150):
-            last_valid_center = (res.x[0], res.x[1])
-            centers.append(last_valid_center)
-        else:
-            centers.append(last_valid_center)
+        # 3-iteration trimmed inlier optimization: ONLY (cx, cy)
+        curr_pts = pts
+        curr_c = last_valid_center
+        for iter_step in range(3):
+            def loss(c):
+                cx, cy = c
+                d = np.sqrt(((curr_pts[:, 0] - cx) / rx_fixed)**2 + ((curr_pts[:, 1] - cy) / ry_target)**2)
+                err = np.abs(d - 1.0) * rx_fixed
+                return np.sum(np.where(err < 2.0, 0.5 * err**2, 2.0 * (err - 1.0)))
+
+            res = minimize(loss, [curr_c[0], curr_c[1]], method='Nelder-Mead', options={'xatol': 0.0005, 'fatol': 0.005})
+            if res.success:
+                curr_c = (float(res.x[0]), float(res.x[1]))
+                # Trim outlier points (cloud artifacts / seeing distortion / chord points)
+                d = np.sqrt(((curr_pts[:, 0] - curr_c[0]) / rx_fixed)**2 + ((curr_pts[:, 1] - curr_c[1]) / ry_target)**2)
+                err = np.abs(d - 1.0) * rx_fixed
+                inliers = err < 2.5
+                if np.sum(inliers) >= 15:
+                    curr_pts = curr_pts[inliers]
+
+        last_valid_center = curr_c
+        centers.append(last_valid_center)
+
+    centers = np.array(centers, dtype=np.float32)
 
     # 4. White Balance & Temporal Luminance Continuity Equalization
     r_means, g_means, b_means, p90_vals = [], [], [], []

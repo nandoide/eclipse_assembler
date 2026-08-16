@@ -702,7 +702,7 @@ def generate_circular_composite(samples, width=1280, height=720, orbit_radius=No
                     "sample": tot_sample,
                     "pos": p_tot,
                     "disk_d": d_inner,
-                    "label": f"TOTAL {tot_sample['timestamp_str']}"
+                    "label": f"MAX {tot_sample['timestamp_str']}"
                 },
                 {
                     "sample": c3_sample,
@@ -779,7 +779,7 @@ def generate_sinusoid_composite(samples, width=1280, height=720, margin=None, am
                     "sample": tot_sample,
                     "pos": p_tot,
                     "disk_d": d_inner,
-                    "label": f"TOTAL {tot_sample['timestamp_str']}"
+                    "label": f"MAX {tot_sample['timestamp_str']}"
                 },
                 {
                     "sample": c3_sample,
@@ -942,7 +942,7 @@ def generate_arc_composite(samples, width=1280, height=720, margin_x=None, disk_
                     "sample": tot_sample,
                     "pos": p_tot,
                     "disk_d": d_inner,
-                    "label": f"TOTAL {tot_sample['timestamp_str']}"
+                    "label": f"MAX {tot_sample['timestamp_str']}"
                 },
                 {
                     "sample": c3_sample,
@@ -951,6 +951,15 @@ def generate_arc_composite(samples, width=1280, height=720, margin_x=None, disk_
                     "label": f"C3 {c3_sample['timestamp_str']}"
                 }
             ]
+
+    return render_consistent_scale(
+        samples, positions,
+        width=width, height=height,
+        disk_scale_factor=disk_scale_factor,
+        show_labels=show_labels,
+        featured_contacts=featured_contacts_data
+    )
+
 
 def generate_spiral_composite(samples, width=3840, height=3840, turns=None, power=0.88, direction="cw", disk_scale_factor=0.78, show_labels=False):
     """
@@ -1036,7 +1045,7 @@ def build_composite(
     print(f"  Disk Scale Factor : {disk_scale_factor:.2f}")
     print(f"  Labels (Timestamps): {'ENABLED (HH:MM:SS)' if show_labels else 'DISABLED'}")
     if layout in ["circle", "ring", "ellipse", "oval", "sinusoid", "s-curve", "s", "sinusoidal", "arc"]:
-        print(f"  Totality Contacts : {contacts.upper()} (C2, TOTAL, C3)")
+        print(f"  Totality Contacts : {contacts.upper()} (C2, MAX, C3)")
 
     samples = sample_eclipse_sequence(
         out_dir=resolved_out,
