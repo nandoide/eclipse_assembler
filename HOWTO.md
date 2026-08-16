@@ -150,7 +150,7 @@ The pipeline implements dedicated computer-vision solvers for every phase:
 ### 3.1 Partial Ingress & Egress Timelapses (The Oblate Atmospheric Solver)
 
 #### The Problem with Circular Solvers at Sunset/Sunrise:
-At low solar elevations (e.g., $< 10^\circ$ above the horizon during the August 12, 2026 egress), atmospheric refraction compresses the vertical axis by $\sim 4\%$. The Sun's horizontal semi-axis remains $R_x \approx 237.5\text{ px}$, but the vertical semi-axis shrinks to $R_y \approx 228.0\text{ px}$. Fitting a rigid circle ($R = 237.5$) creates an ill-conditioned optimization valley where passing clouds or moon transit cause the solver to oscillate vertically by $4-14\text{ px}$.
+At low solar elevations (e.g., $< 10^\circ$ above the horizon during the August 12, 2026 egress), atmospheric refraction compresses the vertical axis by ~4%. The Sun's horizontal semi-axis remains $R_x \approx 237.5\text{ px}$, but the vertical semi-axis shrinks to $R_y \approx 228.0\text{ px}$. Fitting a rigid circle ($R = 237.5$) creates an ill-conditioned optimization valley where passing clouds or moon transit cause the solver to oscillate vertically by $4-14\text{ px}$.
 
 #### The Oblate Physical Formulation:
 The boundary of the flattened solar disk is modeled as a time-varying oblate ellipse:
@@ -162,8 +162,8 @@ $$R_x = 238.0 \cdot \left(\frac{H_{\text{master}}}{720}\right)$$
 $$R_y(t) = R_x \cdot \left[1.0 - 0.042 \cdot \left(\frac{t - t_{\text{start}}}{t_{\text{end}} - t_{\text{start}}}\right)\right]$$
 
 #### Multi-Threshold Ensemble & Convex-Hull Extraction:
-1. Three percentile thresholds ($p \in \{20\%, 35\%, 50\%\}$) are computed on the green channel to extract candidate limb contours across differing cloud-attenuation regimes.
-2. Contours smaller than $15\%$ of expected solar area are pruned.
+1. Three percentile thresholds ($p \in [0.20, 0.35, 0.50]$, corresponding to 20%, 35%, and 50%) are computed on the green channel to extract candidate limb contours across differing cloud-attenuation regimes.
+2. Contours smaller than 15% of expected solar area are pruned.
 3. The convex hull of the exterior contour is computed to exclude the inner lunar intrusion and cloud cutouts.
 4. Edge normals are filtered so only outer boundary points facing outward contribute to solar tracking.
 
@@ -172,7 +172,7 @@ To guarantee absolute immunity against dense passing clouds:
 - **Pass 1**: Initial Nelder-Mead optimization using Huber loss ($\delta = 3.0\text{ px}$):
   $$\mathcal{L}_{\text{Huber}}(r) = \begin{cases} \frac{1}{2}r^2 & \text{for } |r| \le \delta \\ \delta(|r| - \frac{1}{2}\delta) & \text{otherwise} \end{cases}$$
 - **Pass 2**: Compute radial residuals $r_i = \left|\sqrt{\frac{(x_i-c_x)^2}{R_x^2} + \frac{(y_i-c_y)^2}{R_y^2}} - 1.0\right| \cdot R_x$. Discard all outlier points with $r_i > 2.0\text{ px}$.
-- **Pass 3**: Re-optimize $(c_x, c_y)$ strictly on the surviving $> 95\%$ confidence inlier set.
+- **Pass 3**: Re-optimize $(c_x, c_y)$ strictly on the surviving > 95% confidence inlier set.
 
 Result: Center variance across egress clouds is reduced from $\sigma_y = 4.2\text{ px}$ to $\sigma_y \le 0.3\text{ px}$.
 
