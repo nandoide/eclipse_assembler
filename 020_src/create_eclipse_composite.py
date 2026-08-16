@@ -156,7 +156,8 @@ def sample_eclipse_sequence(
     crop_size=1280,
     clock_offset_s=44.3,
     date_str=None,
-    force_db=False
+    force_db=False,
+    num_samples=14
 ):
     """
     Extracts keyframes from CoC output videos (or input directory) and tags each
@@ -231,12 +232,64 @@ def sample_eclipse_sequence(
 
     samples = []
 
+    # Configure dynamic sampling distribution based on num_samples
+    if num_samples == 20:
+        fracs_ingress = [0.18, 0.38, 0.58, 0.78]
+        fracs_pre_tot = [0.25, 0.55, 0.85]
+        tot_key_moments = [
+            (3.45,   "ingress_beads"),        # C2 -> 20:27:35 CEST
+            (10.00,  "ingress_chromosphere"), # 20:27:41 CEST
+            (25.00,  "inner_corona"),         # 20:27:56 CEST
+            (51.73,  "grand_corona"),         # TOTAL -> 20:28:23 CEST
+            (75.00,  "outer_corona"),         # 20:28:46 CEST
+            (98.00,  "egress_chromosphere"),  # 20:29:09 CEST
+            (100.50, "egress_beads"),         # C3 -> 20:29:12 CEST
+        ]
+        fracs_egress = [0.10, 0.25, 0.40, 0.55, 0.70, 0.85]
+    elif num_samples == 14:
+        fracs_ingress = [0.38, 0.78]
+        fracs_pre_tot = [0.38, 0.78]
+        tot_key_moments = [
+            (3.45,   "ingress_beads"),        # C2 -> 20:27:35 CEST
+            (10.00,  "ingress_chromosphere"), # 20:27:41 CEST
+            (25.00,  "inner_corona"),         # 20:27:56 CEST
+            (51.73,  "grand_corona"),         # TOTAL -> 20:28:23 CEST
+            (98.00,  "egress_chromosphere"),  # 20:29:09 CEST
+            (100.50, "egress_beads"),         # C3 -> 20:29:12 CEST
+        ]
+        fracs_egress = [0.15, 0.35, 0.55, 0.75]
+    else:
+        tot_key_moments = [
+            (3.45,   "ingress_beads"),
+            (10.00,  "ingress_chromosphere"),
+            (25.00,  "inner_corona"),
+            (51.73,  "grand_corona"),
+            (75.00,  "outer_corona"),
+            (98.00,  "egress_chromosphere"),
+            (100.50, "egress_beads"),
+        ] if num_samples >= 18 else [
+            (3.45,   "ingress_beads"),
+            (10.00,  "ingress_chromosphere"),
+            (25.00,  "inner_corona"),
+            (51.73,  "grand_corona"),
+            (98.00,  "egress_chromosphere"),
+            (100.50, "egress_beads"),
+        ]
+        n_tot = len(tot_key_moments)
+        n_rem = max(3, num_samples - n_tot)
+        n_ing = max(1, int(round(n_rem * 0.28)))
+        n_pre = max(1, int(round(n_rem * 0.22)))
+        n_egr = max(1, n_rem - n_ing - n_pre)
+        fracs_ingress = np.linspace(0.15, 0.85, n_ing).tolist()
+        fracs_pre_tot = np.linspace(0.20, 0.85, n_pre).tolist()
+        fracs_egress = np.linspace(0.10, 0.88, n_egr).tolist()
+
     # Single-clip fallback
     if len(caps) == 1:
         single_key = list(caps.keys())[0]
         cap = caps[single_key]
         total = counts[single_key]
-        for frac in np.linspace(0.05, 0.95, 14):
+        for frac in np.linspace(0.05, 0.95, num_samples):
             f_idx = int(frac * (total - 1))
             f = read_at(cap, f_idx, total)
             if f is not None:
@@ -255,9 +308,9 @@ def sample_eclipse_sequence(
         cap.release()
         return samples
 
-    # 1. Ingress Partials (2 samples)
+    # 1. Ingress Partials
     if "ingress" in caps and counts["ingress"] > 0:
-        for frac in [0.38, 0.78]:
+        for frac in fracs_ingress:
             f_idx = int(frac * (counts["ingress"] - 1))
             f = read_at(caps["ingress"], f_idx, counts["ingress"])
             if f is not None:
@@ -274,9 +327,9 @@ def sample_eclipse_sequence(
                     "img": clean_and_crop_square(f, crop_size=crop_size, is_totality=False)
                 })
 
-    # 2. Pre-Totality Thin Crescents (2 samples)
+    # 2. Pre-Totality Thin Crescents
     if "pre_tot" in caps and counts["pre_tot"] > 0:
-        for frac in [0.38, 0.78]:
+        for frac in fracs_pre_tot:
             f_idx = int(frac * (counts["pre_tot"] - 1))
             f = read_at(caps["pre_tot"], f_idx, counts["pre_tot"])
             if f is not None:
@@ -293,18 +346,10 @@ def sample_eclipse_sequence(
                     "img": clean_and_crop_square(f, crop_size=crop_size, is_totality=False)
                 })
 
-    # 3. Totality Keyframes (6 samples)
+    # 3. Totality Keyframes
     if "totality" in caps and counts["totality"] > 0:
         tot_fps = caps["totality"].get(cv2.CAP_PROP_FPS) or 30.0
         tot_total = counts["totality"]
-        tot_key_moments = [
-            (3.45,   "ingress_beads"),        # C2 -> 20:27:35 CEST
-            (10.00,  "ingress_chromosphere"), # 20:27:41 CEST
-            (25.00,  "inner_corona"),         # 20:27:56 CEST
-            (51.73,  "grand_corona"),         # TOTAL -> 20:28:23 CEST
-            (98.00,  "egress_chromosphere"),  # 20:29:09 CEST
-            (100.50, "egress_beads"),         # C3 -> 20:29:12 CEST
-        ]
         for t_sec, label in tot_key_moments:
             actual_fi = min(tot_total - 1, int(round(t_sec * tot_fps)))
             f = read_at(caps["totality"], actual_fi, tot_total)
@@ -321,9 +366,9 @@ def sample_eclipse_sequence(
                     "img": clean_and_crop_square(f, crop_size=crop_size, is_totality=True)
                 })
 
-    # 4. Egress Partials (4 samples)
+    # 4. Egress Partials
     if "egress" in caps and counts["egress"] > 0:
-        for frac in [0.15, 0.35, 0.55, 0.75]:
+        for frac in fracs_egress:
             f_idx = int(frac * (counts["egress"] - 1))
             f = read_at(caps["egress"], f_idx, counts["egress"])
             if f is not None:
@@ -907,7 +952,7 @@ def generate_arc_composite(samples, width=1280, height=720, margin_x=None, disk_
                 }
             ]
 
-def generate_spiral_composite(samples, width=3840, height=3840, turns=1.65, power=0.88, direction="cw", disk_scale_factor=0.78, show_labels=False):
+def generate_spiral_composite(samples, width=3840, height=3840, turns=None, power=0.88, direction="cw", disk_scale_factor=0.78, show_labels=False):
     """
     Generates an inward Archimedean/power spiral progression starting at the
     outer canvas perimeter (Frame 0) and winding inwards to the canvas center (Frame N-1).
@@ -924,8 +969,11 @@ def generate_spiral_composite(samples, width=3840, height=3840, turns=1.65, powe
     cx, cy = width / 2.0, height / 2.0
     r_max = width * 0.41
 
+    if turns is None:
+        turns = 2.0 if N >= 18 else 1.65
+
     theta_max = turns * 2.0 * math.pi
-    dense_theta = np.linspace(0.0, theta_max, 3000)
+    dense_theta = np.linspace(0.0, theta_max, 4000)
     # Starts at outer radius r_max and winds inward to center (r=0)
     dense_r = (((theta_max - dense_theta) / theta_max) ** power) * r_max
 
@@ -970,17 +1018,21 @@ def build_composite(
     force_db=False,
     show_labels=False,
     contacts="auto",
+    num_samples=None,
     out_dir="040_out",
     output_path=None,
 ):
     resolved_out = resolve_output_dir(out_dir)
     os.makedirs(resolved_out, exist_ok=True)
 
+    target_num_samples = num_samples if num_samples is not None else (20 if layout in ["spiral", "espiral", "helix"] else 14)
+
     print("=" * 65)
     print(f"ECLIPSE COMPOSITE GENERATOR ({width}x{height})")
     print("=" * 65)
     print(f"  Layout Mode       : {layout.upper()}")
     print(f"  Resolution        : {width}x{height} px")
+    print(f"  Target Frames     : {target_num_samples}")
     print(f"  Disk Scale Factor : {disk_scale_factor:.2f}")
     print(f"  Labels (Timestamps): {'ENABLED (HH:MM:SS)' if show_labels else 'DISABLED'}")
     if layout in ["circle", "ring", "ellipse", "oval", "sinusoid", "s-curve", "s", "sinusoidal", "arc"]:
@@ -991,7 +1043,8 @@ def build_composite(
         crop_size=1280,
         clock_offset_s=clock_offset_s,
         date_str=date_str,
-        force_db=force_db
+        force_db=force_db,
+        num_samples=target_num_samples
     )
     n_tot_got  = sum(1 for s in samples if s["phase"] == "totality")
     n_part_got = sum(1 for s in samples if s["phase"] == "partial")
@@ -1189,6 +1242,8 @@ if __name__ == "__main__":
                         help="Featured totality contacts sequence (C2, TOTAL, C3) layout (auto/horizontal/vertical/none, default: auto)")
     parser.add_argument("--no-contacts", dest="contacts", action="store_const", const="none",
                         help="Disable featured totality contacts sequence (render only the primary layout curve)")
+    parser.add_argument("--frames", "--num-samples", "-n", type=int, default=None,
+                        help="Total number of sampled sequence frames (e.g. 14, 20. Default: auto)")
     parser.add_argument("--output", "-o", type=str, default=None,
                         help="Custom output path (default: 040_out/eclipse_composite_<layout>_<resolution>.png)")
     args = parser.parse_args()
@@ -1199,7 +1254,7 @@ if __name__ == "__main__":
             lay_w = args.size
             lay_h = args.size
         elif lay in ["spiral", "espiral"]:
-            square_dim = args.size or args.width or args.height or 3840
+            square_dim = args.size or args.width or args.height or 7680
             lay_w = square_dim
             lay_h = square_dim
         elif lay in ["vertical", "vertical-s", "mobile", "s-vertical"]:
@@ -1223,6 +1278,7 @@ if __name__ == "__main__":
             force_db=args.force_db,
             show_labels=args.show_labels,
             contacts=args.contacts,
+            num_samples=args.frames,
             out_dir="040_out",
             output_path=args.output if args.layout != "all" else None,
         )

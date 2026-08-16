@@ -272,11 +272,13 @@ Creates standalone high-resolution astronomical composite artwork across diverse
 Inside the cavity of `arc`, `circle`, `ellipse`, and `sinusoid` layouts, the generator can render prominent enlarged keyframes ($1.22\times$ scale) of the totality sequence: **`C2`** *(diamond ring / Baily's beads at 20:27:35 CEST)*, **`TOTAL`** *(maximum grand corona at 20:28:23 CEST)*, and **`C3`** *(third contact diamond ring at 20:29:12 CEST)*. (Note: `spiral` layout does not use contacts as the sequence itself naturally fills the central core).
 
 ```bash
-# 1. 4K Squared Expanding Spiral (3840x3840 px - Center-to-Perimeter):
-python 020_src/create_eclipse_composite.py --layout spiral --size 3840
+# 1. 8K Master Inward Spiral (7680x7680 px - 20 Frames with Timestamps):
+python 020_src/create_eclipse_composite.py --layout spiral --size 7680 --frames 20 --show-labels
+
+# 2. 4K Squared Inward Spiral (3840x3840 px - Perimeter-to-Center):
 python 020_src/create_eclipse_composite.py --layout spiral --size 3840 --show-labels
 
-# 2. Parabolic Celestial Arc with Contacts (Default for Video Assembly - 1280x720 16:9):
+# 3. Parabolic Celestial Arc with Contacts (Default for Video Assembly - 1280x720 16:9):
 python 020_src/create_eclipse_composite.py --layout arc -W 1280 -H 720 --contacts
 
 # 3. 4K UHD Desktop Arc with Timestamps (3840x2160 px):
