@@ -382,7 +382,7 @@ In `arc`, `circle`, and `sinusoid` layouts, three high-resolution inner frames a
 ### 6.3 Consistent Disk Scaling & 8K/16K Ultra-HD Export
 
 To prevent adjacent frames from overlapping regardless of layout density:
-$$\text{Disk Diameter} = \min_{i} \left( \|\mathbf{p}_{i+1} - \mathbf{p}_i\| \right) \cdot \text{scale\_factor}$$
+$$\text{Disk Diameter} = \min_{i} \left( \|\mathbf{p}_{i+1} - \mathbf{p}_i\| \right) \cdot k_{\text{scale}}$$
 
 Supported render sizes range from 720p up to **8K (7680x7680)** and **16K (15360x8640)** for astronomical gallery printing.
 
