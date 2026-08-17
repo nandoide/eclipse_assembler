@@ -319,8 +319,26 @@ python 020_src/create_end_titles.py -i 010_in/07_endtitles.md --duration 6.0
 python 020_src/create_end_titles.py -i 010_in/07_endtitles.md -W 3840 -H 2160 -o 040_out/07_endtitles_4k.mp4
 ```
 
+Example markdown descriptor (`010_in/07_endtitles.md`):
+```markdown
+# Telescope
+DWARF mini
+# Cameras
+Lumix GH6
+# Software
+AI Scaling: Topaz Video AI Rhea
+# Author
+Nandoide
+```
+
+The engine automatically:
+- Parses markdown headers into elegant uppercase section labels (`TELESCOPE`, `CAMERAS`, `SOFTWARE`, `AUTHOR`).
+- Harmonizes pipeline software attribution (`Processing: eclipse-assembler`) in identical style and typography as user tools (`AI Upscaling: Topaz Video 1.7.0 (Rhea)`).
+- Appends the generation/observation date (`DATE`) formatted uniformly.
+- Renders at 2x resolution with Lanczos downsampling on solid black canvas.
+
 ### 7. Totality HDR Composite Photo & AI Prompt Generator (`create_totality_hdr.py`)
-Extracts the 5 key temporal phases from raw totality footage, generates an immediate local OpenCV mathematical HDR composite, and dynamically formats a tailored prompt adapted to the detected prominence and Baily bead positions for web-based multi-modal AI generation (Nano Banana / Gemini / ChatGPT):
+A standalone assistant tool to extract the 5 key temporal phases from raw totality footage, generate an immediate local OpenCV mathematical HDR composite, and dynamically format a tailored prompt adapted to the detected prominence and Baily bead positions for web-based multi-modal AI generation (Nano Banana / Gemini / ChatGPT):
 
 ```bash
 # Run the automated extraction, local synthesis, and prompt generation:
@@ -342,26 +360,10 @@ python 020_src/create_totality_hdr.py -v 010_in/03_video_realtime.mp4 -o 040_out
 3. **Tailored AI Generation Prompt** (`040_out/hdr_samples/ai_prompt.txt`):
    - Programmatically detects angular positions of prominences and beads on the limb and formats a ready-to-paste prompt for web AI generation.
 
+> [!TIP]
+> **Workflow**: Save the resulting composite image (from web AI or the local OpenCV engine) as **`010_in/05_totality_6.jpg`**. The master build pipeline (`build_full_eclipse.py`) will automatically discover it, apply black letterbox padding, and tag it in subtitles and chapters.
 
-Example markdown descriptor (`010_in/07_endtitles.md`):
-```markdown
-# Telescope
-DWARF mini
-# Cameras
-Lumix GH6
-# Software
-AI Scaling: Topaz Video AI Rhea
-# Author
-Nandoide
-```
-
-The engine automatically:
-- Parses markdown headers into elegant uppercase section labels (`TELESCOPE`, `CAMERAS`, `SOFTWARE`, `AUTHOR`).
-- Harmonizes pipeline software attribution (`Processing: eclipse-assembler`) in identical style and typography as user tools (`AI Upscaling: Topaz Video 1.7.0 (Rhea)`).
-- Appends the generation/observation date (`DATE`) formatted uniformly.
-- Renders at 2x resolution with Lanczos downsampling on solid black canvas.
-
-### 7. Ephemeris Database CLI & Refresh
+### 8. Ephemeris Database CLI & Refresh
 ```bash
 # Query ephemeris contacts for auto-detected date:
 python 020_src/eclipse_ephemeris_db.py
@@ -373,7 +375,7 @@ python 020_src/eclipse_ephemeris_db.py --date 2026-08-12
 python 020_src/eclipse_ephemeris_db.py --force-db
 ```
 
-### 8. Lightweight 30-Second Compact Video (for Easy Sharing)
+### 9. Lightweight 30-Second Compact Video (for Easy Sharing)
 Generates an accelerated, universally compatible 30-second version in H.264 (~1.19 MB in 720p HD) for quick distribution via messaging apps (WhatsApp, Telegram) or social media:
 ```bash
 python 020_src/create_compact_clip.py
