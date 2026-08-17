@@ -49,6 +49,7 @@ import create_end_titles as cet
 import create_eclipse_composite as cec
 import generate_eclipse_subtitles as ges
 import eclipse_ephemeris_db as eedb
+import add_audio_track as aat
 from stabilize_eclipse import extract_pure_solar_limb, find_circle_center_fixed_r
 
 
@@ -78,6 +79,8 @@ def parse_coc_filename(filepath):
     layout = "sinusoid"
     comp_w = None
     comp_h = None
+    music_title = None
+    music_author = None
 
     interval = None
     if primary_token == "timelapse":
@@ -134,6 +137,13 @@ def parse_coc_filename(filepath):
                 duration = float(tok)
                 break
 
+    elif primary_token in ["music", "audio", "soundtrack", "song"]:
+        asset_type = "music"
+        # Format: [INDEX]_music_[TITLE]_[AUTHOR].[ext]
+        # Example: 01_music_corrubedo_nandoide.wav
+        music_title = tokens[1].replace('-', ' ').replace('_', ' ').title() if len(tokens) > 1 else "Original Score"
+        music_author = tokens[2].replace('-', ' ').replace('_', ' ').title() if len(tokens) > 2 else "Unknown"
+
     if asset_type is None:
         return None
 
@@ -147,27 +157,37 @@ def parse_coc_filename(filepath):
         'layout': layout,
         'comp_width': comp_w,
         'comp_height': comp_h,
+        'music_title': music_title,
+        'music_author': music_author,
     }
 
 
 def discover_coc_assets(in_dir="010_in"):
     """
-    Scans in_dir for files matching CoC rules, sorting strictly by index ascending.
+    Scans in_dir for files matching CoC rules, separating visual sequence assets
+    from audio tracks. Returns (visual_assets, music_asset).
     """
     if not os.path.exists(in_dir):
-        return []
+        return [], None
 
-    assets = []
+    visual_assets = []
+    music_asset = None
+
     for fname in os.listdir(in_dir):
         if fname.startswith('.') or fname.startswith('tmp_') or fname.endswith('.tmp'):
             continue
         full_path = os.path.join(in_dir, fname)
         item = parse_coc_filename(full_path)
         if item is not None:
-            assets.append(item)
+            if item['asset_type'] == 'music':
+                if music_asset is None:
+                    music_asset = item
+            else:
+                visual_assets.append(item)
 
-    assets.sort(key=lambda x: x['index'])
-    return assets
+    visual_assets.sort(key=lambda x: x['index'])
+    return visual_assets, music_asset
+
 
 
 def detect_project_resolution(assets, fallback=(1280, 720)):
@@ -947,12 +967,12 @@ def assemble_master_film(
       - 'hard': immediate cut between clips
     Uses pure FFmpeg image2pipe streaming with zero RAM footprint and no OpenCV HEVC decoding issues.
     """
-    print("=================================================================")
+    print("=" * 65)
     print(f"ASSEMBLING MASTER FILM: {output_path}")
     print(f"  Resolution : {master_w}x{master_h} @ {fps:.2f} fps")
     print(f"  Clips count: {len(clip_paths)}")
     print(f"  Transition : '{transition_type}'")
-    print("=================================================================")
+    print("=" * 65)
 
     if len(clip_paths) == 0:
         raise ValueError("No clips to assemble.")
@@ -1069,17 +1089,17 @@ def assemble_master_film(
 
     duration_total_s = total_frames_written / fps
     sz_mb = os.path.getsize(output_path) / (1024 * 1024)
-    print("=================================================================")
+    print("=" * 65)
     print(f"SUCCESS: Master film generated at: {output_path}")
     print(f"  Resolution: {master_w}x{master_h} @ {fps:.2f} fps")
     print(f"  Total frames: {total_frames_written} ({duration_total_s:.2f}s)")
     print(f"  File size: {sz_mb:.2f} MB")
-    print("=================================================================")
-    print("=================================================================")
+    print("=" * 65)
+    print("=" * 65 + "\n")
 
 
 # ─────────────────────────────────────────────────────────────────────────────
-# MAIN PIPELINE DISPATCHER
+# PIPELINE CONTROLLER
 # ─────────────────────────────────────────────────────────────────────────────
 
 def run_coc_pipeline(
@@ -1097,59 +1117,54 @@ def run_coc_pipeline(
     no_subtitles=False,
     no_title=False,
     title_duration=5.0,
+    force_db=False,
     date_str=None,
-    force_db=False
+    no_music=False,
+    music_mode="arrange"
 ):
-    """
-    Executes the end-to-end CoC Pipeline with exact astronomical limb tracking.
-    """
     os.makedirs(out_dir, exist_ok=True)
 
-    assets = discover_coc_assets(in_dir)
-    if not assets:
-        print(f"ERROR: No valid CoC assets found in '{in_dir}'.")
-        sys.exit(1)
+    # Discover and separate visual assets from audio
+    visual_assets, music_asset = discover_coc_assets(in_dir)
+    if not visual_assets:
+        print(f"[ERROR] No valid CoC assets found in '{in_dir}'!")
+        return
 
-    master_w, master_h = detect_project_resolution(assets, fallback=(1280, 720))
-    cx_opt = master_w / 2.0
-    cy_opt = master_h / 2.0
+    master_w, master_h = detect_project_resolution(visual_assets, fallback=(1280, 720))
 
-    print("=================================================================")
-    print("SOLAR ECLIPSE PIPELINE (Convention-Over-Configuration)")
-    print("=================================================================")
-    print(f"  Input Directory    : {in_dir}")
-    print(f"  Master Resolution  : {master_w}x{master_h} px (Auto-detected)")
-    print(f"  Optical Center     : ({cx_opt:.1f}, {cy_opt:.1f})")
-    print(f"  Include Title Card : {not no_title} ({title_duration}s)")
-    print(f"  Discovered Assets  : {len(assets)} items")
-    for a in assets:
-        print(f"    [{a['index']:02d}] {a['raw_name']:30s} -> Type: {a['asset_type']} (Duration: {a['duration']}s)")
-    print("=================================================================\n")
+    print("=" * 65)
+    print("ECLIPSE ASSEMBLER: CONVENTION-OVER-CONFIGURATION MASTER PIPELINE")
+    print("=" * 65)
+    print(f"  Input Directory   : {in_dir}")
+    print(f"  Output Directory  : {out_dir}")
+    print(f"  Master Resolution : {master_w}x{master_h} px")
+    print(f"  Visual Clips      : {len(visual_assets)} discovered")
+    if music_asset is not None and not no_music:
+        print(f"  Music Track       : {music_asset['raw_name']} (Title: '{music_asset['music_title']}', Author: '{music_asset['music_author']}')")
+    print("=" * 65)
+    print()
 
-    # Detect if this is the standard multi-phase recording sequence to apply known boundary offsets
-    has_totality = any(a['asset_type'] == 'video_realtime' for a in assets)
-
+    has_totality = any(a['asset_type'] in ['video_realtime', 'photo'] and 'totality' in a['raw_name'].lower() for a in visual_assets)
     processed_clip_paths = []
 
-    # 1. Opening Title Card (Clip 00)
+    # 1. Generate opening dynamic title card if requested
     if not no_title:
-        out_title_path = os.path.join(out_dir, "00_title.mp4")
-        print(f"Generating Opening Title Card [00]: {out_title_path} ({title_duration}s)...")
-        if not os.path.exists(out_title_path) or force_all:
+        title_clip_path = os.path.join(out_dir, "00_title.mp4")
+        if not os.path.exists(title_clip_path) or force_all:
+            print(f"Generating Dynamic Opening Title Card ({title_duration}s)...")
             ctc.generate_title_card(
-                date_str=date_str,
+                duration_s=title_duration,
                 width=master_w,
                 height=master_h,
-                duration_s=title_duration,
                 out_dir=out_dir,
-                output_mp4=out_title_path,
+                output_mp4=title_clip_path,
+                date_str=date_str,
                 force_db=force_db
             )
-        processed_clip_paths.append(out_title_path)
-        print()
+        processed_clip_paths.append(title_clip_path)
 
-    # 2. Process all CoC assets in order
-    for a in assets:
+    # 2. Process all visual CoC assets in order
+    for a in visual_assets:
         idx = a['index']
         a_type = a['asset_type']
         in_path = a['path']
@@ -1165,7 +1180,6 @@ def run_coc_pipeline(
             continue
 
         if a_type == "timelapse":
-            # If timelapse is after totality (e.g. index >= 4 or egress), apply transition offset (+35.0, +24.0)
             if has_totality and idx >= 4:
                 shift_offset = (35.0, 24.0)
                 r_fixed = 237.5 * (master_h / 720.0)
@@ -1194,7 +1208,6 @@ def run_coc_pipeline(
             )
 
         elif a_type == "video_realtime":
-            # Totality silhouette tracking with C2 inheritance
             shift_offset = (12.5, 7.5) if idx >= 3 else (0.0, 0.0)
             process_video_realtime_asset(
                 in_path=in_path,
@@ -1206,7 +1219,6 @@ def run_coc_pipeline(
             )
 
         elif a_type == "photo":
-            print(f"Generating Still Photo Video: {raw_name} -> {out_clip_path} ({a['duration']}s)")
             process_photo_asset(
                 in_path=in_path,
                 out_path=out_clip_path,
@@ -1217,7 +1229,6 @@ def run_coc_pipeline(
             )
 
         elif a_type == "composite":
-            print(f"Generating On-The-Fly Composite Artwork: Layout={a['layout'].upper()} ({a['comp_width']}x{a['comp_height']}) -> {out_clip_path} ({a['duration']}s)")
             process_composite_asset(
                 asset_meta=a,
                 out_path=out_clip_path,
@@ -1229,13 +1240,21 @@ def run_coc_pipeline(
 
         elif a_type == "endtitles":
             print(f"Generating Closing Credits & End Titles: {raw_name} -> {out_clip_path} ({a['duration']}s)")
+            music_info = None
+            if music_asset is not None:
+                music_info = {
+                    'title': music_asset.get('music_title', 'Original Score'),
+                    'author': music_asset.get('music_author', 'Unknown')
+                }
             cet.generate_end_titles(
                 md_path=in_path,
                 duration_s=a['duration'],
                 width=master_w,
                 height=master_h,
                 out_dir=out_dir,
-                output_mp4=out_clip_path
+                output_mp4=out_clip_path,
+                music_info=music_info,
+                eclipse_date_str=date_str
             )
 
         processed_clip_paths.append(out_clip_path)
@@ -1257,7 +1276,7 @@ def run_coc_pipeline(
         fps=30.0, crf=16, preset="fast"
     )
 
-    # Invoke standalone subtitle generator as final step
+    # Invoke standalone subtitle generator
     if not no_subtitles:
         srt_master_path = os.path.splitext(output_film)[0] + ".srt"
         ges.generate_eclipse_subtitles_pipeline(
@@ -1274,6 +1293,34 @@ def run_coc_pipeline(
             in_dir=in_dir,
             out_dir=out_dir
         )
+
+    # 3. Audio / Music Track Synchronization and Muxing
+    if music_asset is not None and not no_music:
+        print("=" * 65)
+        print(f"INTEGRATING AUDIO TRACK: {music_asset['raw_name']}")
+        print(f"  Title  : {music_asset['music_title']}")
+        print(f"  Author : {music_asset['music_author']}")
+        print("=" * 65)
+
+        targets_to_mux = []
+        if not no_subtitles:
+            subtitled_path = os.path.splitext(output_film)[0] + "_subtitled.mp4"
+            if os.path.exists(subtitled_path):
+                targets_to_mux.append(subtitled_path)
+        if os.path.exists(output_film) and output_film not in targets_to_mux:
+            targets_to_mux.append(output_film)
+
+        for tgt in targets_to_mux:
+            temp_out = os.path.join(out_dir, f"tmp_mux_{os.path.basename(tgt)}")
+            aat.add_audio_to_video(
+                video_path=tgt,
+                audio_path=music_asset['path'],
+                output_path=temp_out,
+                mode=music_mode
+            )
+            if os.path.exists(temp_out):
+                os.replace(temp_out, tgt)
+                print(f"  -> Successfully synchronized audio track into {tgt}")
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -1314,6 +1361,10 @@ if __name__ == "__main__":
                         help="Force refresh eclipse database")
     parser.add_argument("--force-all", action="store_true",
                         help="Force re-processing and re-stabilizing all assets from scratch")
+    parser.add_argument("--no-music", action="store_true",
+                        help="Skip automatic musical audio track synchronization and muxing")
+    parser.add_argument("--music-mode", type=str, choices=["arrange", "stretch", "cut", "auto"], default="arrange",
+                        help="Audio sync mode: 'arrange' (musical phrase edit at 100%% tempo, default), 'stretch', 'cut', or 'auto'")
     args = parser.parse_args()
 
     run_coc_pipeline(

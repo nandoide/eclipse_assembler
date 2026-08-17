@@ -215,6 +215,9 @@ def build_timeline_mapping(
             tokens = m.group(2).split('_')
             primary = tokens[0].lower()
 
+            if primary in ["music", "audio", "soundtrack", "song"] or fname.lower().endswith(('.wav', '.mp3', '.flac', '.m4a', '.aac', '.ogg')):
+                continue
+
             interval = 10.0
             duration = 10.0
             a_type = primary
@@ -311,6 +314,8 @@ def build_timeline_mapping(
             trans_start = current_time
             trans_end = current_time + trans_dur
             prev_seg = segments[-1]
+            t_dt_start = prev_seg.get("dt_start", dt_ingress_start) if prev_seg["type"] == "totality_artwork" else prev_seg.get("dt_end", dt_ingress_start)
+            t_dt_end = prev_seg.get("dt_end", dt_ingress_start)
             segments.append({
                 "type": "transition",
                 "filename": f"transition_{idx}",
@@ -318,8 +323,8 @@ def build_timeline_mapping(
                 "end": trans_end,
                 "prev_type": prev_seg["type"],
                 "speed_factor": prev_seg.get("speed_factor", 1.0),
-                "dt_start": prev_seg.get("dt_end", dt_ingress_start),
-                "dt_end": prev_seg.get("dt_end", dt_ingress_start)
+                "dt_start": t_dt_start,
+                "dt_end": t_dt_end
             })
             current_time = trans_end
 
@@ -519,6 +524,10 @@ def get_astronomical_state_at(t: float, segments: list, c2_point: float, c3_poin
                     phase_str = f"C3->C4: Egreso Parcial ({speed_str})" if is_es else f"C3->C4: Partial Egress ({speed_str})"
                 elif p_type in ["photo_corona", "totality_artwork"]:
                     if p_type == "totality_artwork":
+                        if 'dt_end' in seg and 'dt_start' in seg and seg['dt_end'] != seg['dt_start']:
+                            clock_str = f"{seg['dt_start'].strftime('%H:%M:%S')} - {seg['dt_end'].strftime('%H:%M:%S')}"
+                        else:
+                            clock_str = seg['dt_start'].strftime('%H:%M:%S')
                         phase_str = "Composición artística de la totalidad (HDR multifase)" if is_es else "Artistic Totality HDR Composite (Multi-phase fusion - Artwork)"
                     else:
                         phase_str = "Corona Solar (Totalidad)" if is_es else "Solar Corona (Totality)"

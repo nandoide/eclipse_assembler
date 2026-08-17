@@ -96,7 +96,8 @@ def render_end_titles_image(
     width: int = 1280,
     height: int = 720,
     generation_dt: datetime.datetime = None,
-    eclipse_date_str: str = None
+    eclipse_date_str: str = None,
+    music_info: dict = None
 ) -> Image.Image:
     """
     Renders an elegant, anti-aliased cinematic end credits card on solid black canvas.
@@ -127,6 +128,7 @@ def render_end_titles_image(
     # Ensure Software section exists and includes eclipse_assembler + user software
     processed_sections = []
     has_software = False
+    has_music = False
 
     for hdr, lines in sections:
         hdr_lower = hdr.lower()
@@ -143,11 +145,20 @@ def render_end_titles_image(
             processed_sections.append(("TELESCOPE", lines))
         elif "location" in hdr_lower or "lugar" in hdr_lower or "site" in hdr_lower:
             processed_sections.append(("OBSERVATION SITE", lines))
+        elif "music" in hdr_lower or "musica" in hdr_lower or "soundtrack" in hdr_lower:
+            has_music = True
+            processed_sections.append(("MUSIC", lines))
         else:
             processed_sections.append((hdr.upper(), lines))
 
     if not has_software:
         processed_sections.append(("SOFTWARE", ["Processing: eclipse-assembler"]))
+
+    # If music_info is supplied and not already in markdown, add MUSIC section
+    if music_info and not has_music:
+        t_str = music_info.get("title", "Original Soundtrack")
+        a_str = music_info.get("author", "Nandoide")
+        processed_sections.append(("MUSIC", [f'"{t_str}" — {a_str}']))
 
     # Date formatting (Formatted e.g. August 16, 2026)
     if eclipse_date_str:
@@ -206,7 +217,9 @@ def generate_end_titles(
     crf: int = 16,
     out_dir: str = "040_out",
     output_mp4: str = None,
-    generation_dt: datetime.datetime = None
+    generation_dt: datetime.datetime = None,
+    music_info: dict = None,
+    eclipse_date_str: str = None
 ) -> tuple:
     """
     Parses markdown descriptor, renders closing credits graphic and encodes video clip.
@@ -226,7 +239,9 @@ def generate_end_titles(
         sections=sections,
         width=width,
         height=height,
-        generation_dt=generation_dt
+        generation_dt=generation_dt,
+        eclipse_date_str=eclipse_date_str,
+        music_info=music_info
     )
 
     base_name = os.path.splitext(os.path.basename(md_path))[0] if md_path else "07_endtitles"

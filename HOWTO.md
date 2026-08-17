@@ -104,6 +104,7 @@ eclipse26/
 │   ├── DWARF_mini_TELE_TL_2026-08-12-20-32-53-127.mp4
 │   └── gps.jpg              # Any photo with EXIF GPS coordinates of observation site
 ├── 010_in/                  # Curated CoC source clips and instructions
+│   ├── 01_music_corrubedo_nandoide.wav # Soundtrack ([INDEX]_music_[TITLE]_[AUTHOR].[ext])
 │   ├── 01_timelapse_i10.mp4
 │   ├── 02_video_slowdown_10.mp4
 │   ├── 03_video_realtime.mp4
@@ -112,6 +113,7 @@ eclipse26/
 │   ├── 06_composite_arc_10
 │   └── 07_endtitles.md
 ├── 020_src/                 # Core Python engine modules
+│   ├── add_audio_track.py
 │   ├── build_full_eclipse.py
 │   ├── create_totality_hdr.py
 │   ├── create_eclipse_composite.py
@@ -129,12 +131,13 @@ eclipse26/
 ```
 
 ### CoC Asset Naming Grammar:
-`[INDEX]_[TYPE]_[PARAMS/INTERVAL/LAYOUT]_[DURATION].[ext]`
+`[INDEX]_[TYPE]_[PARAMS/INTERVAL/LAYOUT/TITLE]_[DURATION/AUTHOR].[ext]`
 
 - `_i[N]` specifies intervalometer step in seconds (e.g., `_i10` = 1 frame every 10s $\to$ $300\times$ speedup at 30 fps).
 - `_slowdown_[N]` specifies target duration in seconds for burst pre-totality footage (e.g., `_slowdown_10` = 10s).
 - `_composite_[LAYOUT]_[N]` specifies on-the-fly artwork generation (`arc`, `spiral`, `sinusoid`, `circle`) held for $N$ seconds.
 - `_photo_[N]` specifies static photo held for $N$ seconds.
+- `_music_[TITLE]_[AUTHOR].[ext]` specifies a soundtrack audio track (e.g., `01_music_corrubedo_nandoide.wav` $\to$ Title: *"Corrubedo"*, Composer: *Nandoide*). Generically analyzes spectral novelty, onset boundaries, and RMS energy to seamlessly retarget the music at 100% natural tempo with phase-aligned crossfades, synchronizing the primary climax with Totality Max and automatically appending a `MUSIC` credits card to `07_endtitles.mp4`.
 
 ---
 

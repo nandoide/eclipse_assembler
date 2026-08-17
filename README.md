@@ -117,7 +117,8 @@ This pipeline follows **Convention over Configuration (CoC)**. Curated assets in
 | **`05_totality_6.jpg`** | `totality` | Multi-exposure Totality HDR composite artwork (synthesizing corona, ruby $H\alpha$ prominences, and Baily's beads across totality). Scaled with black letterbox padding; automatically tags subtitles and chapters as multi-phase artistic composite artwork. | 10.0s (or `_6` for 6s) |
 | **`05_photo_6.jpg`** | `photo` | Single-exposure still image, scaled preserving aspect ratio with clean black letterbox padding for specified duration (e.g. 6s). | 10.0s (or `_6` for 6s) |
 | **`06_composite_arc_10`** | `composite` | Generates high-resolution composite artwork mosaic on-the-fly (`arc`, `circle`, `ellipse`, `sinusoid`, `spiral`, etc.) with prominent totality contacts (`C2`, `MAX`, `C3`), scaled to project resolution (16:9 1280x720), held for specified duration (e.g. 10s). | 10.0s |
-| **`07_endtitles.md`** | `endtitles` | Markdown descriptor for closing credits and telemetry card (`# Telescope`, `# Cameras`, `# Software`, `# Author`). Renders 2x supersampled anti-aliased card with software pipeline credits and date. | 6.0s (or custom `_8` for 8s) |
+| **`07_endtitles.md`** | `endtitles` | Markdown descriptor for closing credits and telemetry card (`# Telescope`, `# Cameras`, `# Software`, `# Author`, `# Music`). Renders 2x supersampled anti-aliased card with software pipeline credits, dynamic music credits, and date. | 6.0s (or custom `_8` for 8s) |
+| **`01_music_corrubedo_nandoide.wav`** | `music` | Soundtrack audio track (`[INDEX]_music_[TITLE]_[AUTHOR].[ext]`). Generically retargets and structures audio at 100% natural tempo with phase-aligned crossfades, synchronizing climax with Totality Max (~65s), muxing high-fidelity AAC 320 kbps into master video, and dynamically crediting in end titles. | Full film duration (`181.6s`) |
 
 ---
 
