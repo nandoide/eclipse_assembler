@@ -54,8 +54,9 @@ The **Eclipse Assembler** is engineered to transform heterogeneous raw captures 
         │  • 02_video_slowdown_10.mp4                          │
         │  • 03_video_realtime.mp4                             │
         │  • 04_timelapse_i10.mp4                              │
-        │  • 05_photo_6.jpg                                    │
+        │  • 05_totality_6.jpg (or 05_photo_6.jpg)             │
         │  • 06_composite_arc_10                               │
+        │  • 07_endtitles.md                                   │
         └──────────────────────────┬───────────────────────────┘
                                    │
                                    ▼
@@ -107,12 +108,15 @@ eclipse26/
 │   ├── 02_video_slowdown_10.mp4
 │   ├── 03_video_realtime.mp4
 │   ├── 04_timelapse_i10.mp4
-│   ├── 05_photo_6.jpg
-│   └── 06_composite_arc_10
+│   ├── 05_totality_6.jpg (or 05_photo_6.jpg)
+│   ├── 06_composite_arc_10
+│   └── 07_endtitles.md
 ├── 020_src/                 # Core Python engine modules
 │   ├── build_full_eclipse.py
+│   ├── create_totality_hdr.py
 │   ├── create_eclipse_composite.py
 │   ├── create_title_card.py
+│   ├── create_end_titles.py
 │   ├── eclipse_ephemeris_db.py
 │   ├── fetch_eclipses_horizons.py
 │   ├── generate_eclipse_subtitles.py

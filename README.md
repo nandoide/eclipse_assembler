@@ -114,7 +114,8 @@ This pipeline follows **Convention over Configuration (CoC)**. Curated assets in
 | **`02_video_slowdown_10.mp4`** | `video_slowdown` | High-speed burst video. Automatically filters black/corrupt frames, resamples $396.7\text{s}$ of pre-totality footage to `duration` (e.g. 10s), smooths camera exposure jumps, and stabilizes solar limb. | 10.0s (speed: $\frac{396.7\text{s}}{10\text{s}} \approx \mathbf{40\times}$) |
 | **`03_video_realtime.mp4`** | `video_realtime` | Continuous 1x real-time video (30 fps) with lunar silhouette, corona, and Baily's beads tracking. Preserves exact 1:1 real-time duration. | Native real duration ($\mathbf{1\times}$ Real-Time) |
 | **`04_timelapse_i10.mp4`** | `timelapse` | Egress timelapse with `_i[INTERVAL]` parameter (`_i10` = 1 frame every 10s). Subpixel solar limb stabilization. | Native clip duration (speed: $10\text{s} \times 30\text{fps} = \mathbf{300\times}$) |
-| **`05_photo_6.jpg`** | `photo` | Visual still image, scaled preserving aspect ratio with clean black letterbox padding for specified duration (e.g. 6s). | 10.0s (or `_6` for 6s) |
+| **`05_totality_6.jpg`** | `totality` | Multi-exposure Totality HDR composite artwork (synthesizing corona, ruby $H\alpha$ prominences, and Baily's beads across totality). Scaled with black letterbox padding; automatically tags subtitles and chapters as multi-phase artistic composite artwork. | 10.0s (or `_6` for 6s) |
+| **`05_photo_6.jpg`** | `photo` | Single-exposure still image, scaled preserving aspect ratio with clean black letterbox padding for specified duration (e.g. 6s). | 10.0s (or `_6` for 6s) |
 | **`06_composite_arc_10`** | `composite` | Generates high-resolution composite artwork mosaic on-the-fly (`arc`, `circle`, `ellipse`, `sinusoid`, `spiral`, etc.) with prominent totality contacts (`C2`, `MAX`, `C3`), scaled to project resolution (16:9 1280x720), held for specified duration (e.g. 10s). | 10.0s |
 | **`07_endtitles.md`** | `endtitles` | Markdown descriptor for closing credits and telemetry card (`# Telescope`, `# Cameras`, `# Software`, `# Author`). Renders 2x supersampled anti-aliased card with software pipeline credits and date. | 6.0s (or custom `_8` for 8s) |
 
@@ -148,8 +149,8 @@ This pipeline follows **Convention over Configuration (CoC)**. Curated assets in
 │ 04_timelapse_i10.mp4   │ ───► [Adaptive Solar Limb Track     ─► │ 04_timelapse_i10.mp4   │
 │ (Egress Timelapse)     │      + Color Balance Eq]               │ (8.20s @ 30 fps, x300) │
 ├────────────────────────┤                                        ├────────────────────────┤
-│ 05_photo_6.jpg         │ ───► [Scale & Pad to Canvas]        ─► │ 05_photo_6.mp4         │
-│ (Still Photograph)     │      (Preserve AR + Black Border)      │ (6.00s @ 30 fps)       │
+│ 05_totality_6.jpg      │ ───► [Scale & Pad to Canvas]        ─► │ 05_totality_6.mp4      │
+│ (Totality HDR Artwork) │      (Preserve AR + Black Border)      │ (6.00s @ 30 fps)       │
 ├────────────────────────┤                                        ├────────────────────────┤
 │ 06_composite_arc_10    │ ───► [On-The-Fly Artwork Render]    ─► │ 06_composite_arc_10.mp4│
 │ (Mosaic Directive)     │      (Arc Mosaic + Central Contacts)   │ (10.00s @ 30 fps)      │
@@ -400,12 +401,13 @@ eclipse_assembler/
 │   ├── 02_video_slowdown_10.mp4      # Pre-totality burst video (10s resample)
 │   ├── 03_video_realtime.mp4         # Totality real-time continuous video (1x)
 │   ├── 04_timelapse_i10.mp4          # Egress time-lapse (1 frame every 10s)
-│   ├── 05_photo_6.jpg                # Still photograph (6s hold)
+│   ├── 05_totality_6.jpg             # Totality HDR multi-phase artwork (6s hold)
 │   ├── 06_composite_arc_10           # On-the-fly composite mosaic (10s hold)
 │   └── 07_endtitles.md               # Closing credits descriptor (6s hold)
 │
 ├── 020_src/                          # Python source code
 │   ├── build_full_eclipse.py         # ★ CoC Master pipeline and assembly script
+│   ├── create_totality_hdr.py        # ★ Totality HDR composite engine & dynamic AI prompt adapter
 │   ├── eclipse_ephemeris_db.py       # ★ Universal Solar/Lunar Besselian database & solver
 │   ├── fetch_eclipses_horizons.py    # ★ NASA JPL Horizons API fetcher & DB builder (2026-2036)
 │   ├── compare_contacts_ephemeris.py # ★ Observational telemetry vs. NASA ephemeris comparison
@@ -427,7 +429,7 @@ eclipse_assembler/
 │   ├── 02_video_slowdown_10.mp4      # Filtered & stabilized pre-totality (10.00s)
 │   ├── 03_video_realtime.mp4         # Stabilized totality (107.33s, speed 1x)
 │   ├── 04_timelapse_i10.mp4          # Stabilized partial egress (8.20s, speed x300)
-│   ├── 05_photo_6.mp4                # Letterboxed photo video (6.00s)
+│   ├── 05_totality_6.mp4             # Letterboxed Totality HDR artwork video (6.00s)
 │   ├── 06_composite_arc_10.mp4       # 16:9 composite arc video with contacts (10.00s)
 │   ├── 06_composite_arc_10.json      # 📋 Frame timestamps metadata for composite
 │   ├── 07_endtitles.mp4              # Closing credits video clip (6.00s)
@@ -462,7 +464,7 @@ eclipse_assembler/
 | **`02_video_slowdown_10.mp4`** | 1280x720 | 30.0 fps | 10.00s (0.69 MB) | Filtered & stabilized pre-totality ($396.7\text{s} \to 10\text{s}$, speed x40) |
 | **`03_video_realtime.mp4`** | 1280x720 | 30.0 fps | 107.33s (13.71 MB) | Totality & corona in exact 1x Real-Time |
 | **`04_timelapse_i10.mp4`** | 1280x720 | 30.0 fps | 8.20s (2.66 MB) | Stabilized partial egress ($R = 237.5\text{ px}$, speed x300) |
-| **`05_photo_6.mp4`** | 1280x720 | 30.0 fps | 6.00s (0.12 MB) | Still photo scaled with black letterboxing |
+| **`05_totality_6.mp4`** | 1280x720 | 30.0 fps | 6.00s (0.12 MB) | Letterboxed Totality HDR composite artwork video |
 | **`06_composite_arc_10.mp4`** | 1280x720 | 30.0 fps | 10.00s (0.05 MB) | Native 16:9 arc mosaic clip with prominent contacts |
 | **`07_endtitles.mp4`** | 1280x720 | 30.0 fps | 6.00s (0.07 MB) | Closing credits and production telemetry card |
 | **`full_eclipse.mp4`** | **1280x720** | **30.0 fps** | **181.60s (12.56 MB)** | 🎬 **Master film with title card, credits & cinematic transitions** |
