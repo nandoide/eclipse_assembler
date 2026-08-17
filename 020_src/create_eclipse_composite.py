@@ -395,12 +395,13 @@ def sample_eclipse_sequence(
 # LAYOUT ENGINES
 # ─────────────────────────────────────────────────────────────────────────────
 
-def render_consistent_scale(samples, positions, width=1280, height=720, disk_scale_factor=0.78, show_labels=False, featured_contacts=None):
+def render_consistent_scale(samples, positions, width=1280, height=720, disk_scale_factor=0.78, show_labels=False, featured_contacts=None, metadata_block=None):
     """
     Composites all frames into the black canvas with consistent disk scaling and soft additive blending.
     Uses minimum distance between adjacent frames to ensure clean, non-overlapping spacing.
     Optionally overlays centered astronomical timestamp labels (HH:MM:SS) below each frame.
     Optionally overlays prominent featured totality contacts (C2, TOTAL, C3) inside central cavity.
+    Optionally overlays a central astronomical metadata block (Title + Sequence Duration).
     """
     canvas = np.zeros((height, width, 3), dtype=np.float32)
     N = len(positions)
@@ -431,39 +432,43 @@ def render_consistent_scale(samples, positions, width=1280, height=720, disk_sca
         x2 = x1 + out_patch_sz
         y2 = y1 + out_patch_sz
 
-        cx1, cy1 = max(0, x1), max(0, y1)
-        cx2, cy2 = min(width, x2), min(height, y2)
+        src_x1, src_y1 = max(0, -x1), max(0, -y1)
+        src_x2 = min(out_patch_sz, width - x1)
+        src_y2 = min(out_patch_sz, height - y1)
 
-        px1 = cx1 - x1
-        py1 = cy1 - y1
-        px2 = px1 + (cx2 - cx1)
-        py2 = py1 + (cy2 - cy1)
+        dst_x1, dst_y1 = max(0, x1), max(0, y1)
+        dst_x2, dst_y2 = min(width, x2), min(height, y2)
 
-        if cx2 > cx1 and cy2 > cy1:
-            curr_reg = canvas[cy1:cy2, cx1:cx2]
-            patch_reg = patch[py1:py2, px1:px2]
+        if dst_x2 > dst_x1 and dst_y2 > dst_y1:
+            patch_crop = patch[src_y1:src_y2, src_x1:src_x2]
+            dest_crop = canvas[dst_y1:dst_y2, dst_x1:dst_x2]
 
-            # Soft maximum blend preserves brightest coronas and photospheric crescents
-            blended = np.maximum(curr_reg, patch_reg)
-            canvas[cy1:cy2, cx1:cx2] = blended
+            if s["phase"] == "totality":
+                # Soft screen / max blend for corona
+                blended = np.maximum(dest_crop, patch_crop)
+            else:
+                # Additive max for partial crescents
+                blended = np.maximum(dest_crop, patch_crop)
 
-    # Draw Featured Totality Contacts (C2, TOTAL, C3) if provided
+            canvas[dst_y1:dst_y2, dst_x1:dst_x2] = blended
+
+    # Draw featured totality contacts if provided
     if featured_contacts:
         for item in featured_contacts:
             s = item["sample"]
             px, py = item["pos"]
             d_inner = item["disk_d"]
-            inner_scale = d_inner / 500.0
-            in_patch_sz = max(64, int(round(1280 * inner_scale)))
-            in_patch_sz = (in_patch_sz // 2) * 2
-            half_in = in_patch_sz // 2
+            scale_in = d_inner / 500.0
+            in_sz = max(64, int(round(1280 * scale_in)))
+            in_sz = (in_sz // 2) * 2
+            half_in = in_sz // 2
 
-            patch = cv2.resize(s["img"], (in_patch_sz, in_patch_sz), interpolation=cv2.INTER_LANCZOS4).astype(np.float32)
+            patch = cv2.resize(s["img"], (in_sz, in_sz), interpolation=cv2.INTER_LANCZOS4).astype(np.float32)
 
             x1 = int(round(px - half_in))
             y1 = int(round(py - half_in))
-            x2 = x1 + in_patch_sz
-            y2 = y1 + in_patch_sz
+            x2 = x1 + in_sz
+            y2 = y1 + in_sz
 
             cx1, cy1 = max(0, x1), max(0, y1)
             cx2, cy2 = min(width, x2), min(height, y2)
@@ -507,6 +512,7 @@ def render_consistent_scale(samples, positions, width=1280, height=720, disk_sca
         if font is None:
             font = ImageFont.load_default()
 
+        # 1. Overlay timestamps under disk frames
         if show_labels:
             label_offset_y = (target_disk_d / 2.0) + (font_sz * 0.45)
             for i in range(N):
@@ -546,10 +552,6 @@ def render_consistent_scale(samples, positions, width=1280, height=720, disk_sca
 
                 px, py = item["pos"]
                 d_inner = item["disk_d"]
-                inner_scale = d_inner / 500.0
-                in_patch_sz = max(64, int(round(1280 * inner_scale)))
-                half_in = in_patch_sz // 2
-
                 inner_font_sz = max(13, int(round(d_inner * 0.088)))
                 inner_font = None
                 for fp in [
@@ -566,7 +568,6 @@ def render_consistent_scale(samples, positions, width=1280, height=720, disk_sca
                             pass
                 if inner_font is None:
                     inner_font = font
-
 
                 bbox = draw.textbbox((0, 0), contact_label, font=inner_font)
                 tw = bbox[2] - bbox[0]
@@ -588,12 +589,122 @@ def render_consistent_scale(samples, positions, width=1280, height=720, disk_sca
                 # Elegant warm golden color for the featured inner labels
                 draw.text((tx, ty), contact_label, font=inner_font, fill=(255, 232, 170))
 
+        # 3. Overlay central metadata block (Title & Sequence Duration)
+        if metadata_block:
+            title = metadata_block.get("title", "")
+            sub = metadata_block.get("subtitle", "")
+            mx, my = metadata_block.get("pos", (width / 2.0, height * 0.65))
+
+            # Title font
+            t_font_sz = max(18, int(round(min(width, height) * 0.0155)))
+            t_font = None
+            for fp in [
+                "/System/Library/Fonts/Supplemental/Futura.ttc",
+                "/System/Library/Fonts/Helvetica.ttc",
+                "/Library/Fonts/Arial.ttf",
+                "/System/Library/Fonts/Supplemental/Arial.ttf",
+                "/usr/share/fonts/truetype/dejavu/DejaVuSans-Bold.ttf",
+            ]:
+                if os.path.exists(fp):
+                    try:
+                        t_font = ImageFont.truetype(fp, t_font_sz)
+                        break
+                    except Exception:
+                        pass
+            if t_font is None:
+                t_font = font
+
+            # Subtitle font (Sequence Duration)
+            s_font_sz = max(12, int(round(min(width, height) * 0.0105)))
+            s_font = None
+            for fp in [
+                "/System/Library/Fonts/Helvetica.ttc",
+                "/Library/Fonts/Arial.ttf",
+                "/System/Library/Fonts/Supplemental/Arial.ttf",
+                "/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf",
+            ]:
+                if os.path.exists(fp):
+                    try:
+                        s_font = ImageFont.truetype(fp, s_font_sz)
+                        break
+                    except Exception:
+                        pass
+            if s_font is None:
+                s_font = font
+
+            # Coordinates font (GPS & Elevation)
+            c_font_sz = max(11, int(round(min(width, height) * 0.0092)))
+            c_font = None
+            for fp in [
+                "/System/Library/Fonts/Helvetica.ttc",
+                "/Library/Fonts/Arial.ttf",
+                "/System/Library/Fonts/Supplemental/Arial.ttf",
+                "/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf",
+            ]:
+                if os.path.exists(fp):
+                    try:
+                        c_font = ImageFont.truetype(fp, c_font_sz)
+                        break
+                    except Exception:
+                        pass
+            if c_font is None:
+                c_font = font
+
+            coords = metadata_block.get("coords", "")
+
+            # Draw Title (Line 1)
+            if title:
+                t_bbox = draw.textbbox((0, 0), title, font=t_font)
+                t_tw = t_bbox[2] - t_bbox[0]
+                t_th = t_bbox[3] - t_bbox[1]
+                t_tx = mx - t_tw / 2.0
+                t_ty = my - (t_th * 1.35 if coords else t_th)
+
+                # Shadow
+                draw.text((t_tx + 2, t_ty + 2), title, font=t_font, fill=(0, 0, 0))
+                draw.text((t_tx - 1, t_ty + 1), title, font=t_font, fill=(0, 0, 0))
+                draw.text((t_tx + 1, t_ty - 1), title, font=t_font, fill=(0, 0, 0))
+                # Warm platinum gold
+                draw.text((t_tx, t_ty), title, font=t_font, fill=(245, 235, 195))
+
+            # Draw Subtitle (Line 2 - Sequence)
+            if sub:
+                s_bbox = draw.textbbox((0, 0), sub, font=s_font)
+                s_tw = s_bbox[2] - s_bbox[0]
+                s_th = s_bbox[3] - s_bbox[1]
+                s_tx = mx - s_tw / 2.0
+                s_ty = my + (t_font_sz * 0.15 if coords else t_font_sz * 0.42)
+
+                # Shadow
+                draw.text((s_tx + 1, s_ty + 1), sub, font=s_font, fill=(0, 0, 0))
+                draw.text((s_tx - 1, s_ty + 1), sub, font=s_font, fill=(0, 0, 0))
+                # Crisp silver gray
+                draw.text((s_tx, s_ty), sub, font=s_font, fill=(185, 190, 205))
+
+            # Draw Coordinates (Line 3 - GPS & Elevation)
+            if coords:
+                c_bbox = draw.textbbox((0, 0), coords, font=c_font)
+                c_tw = c_bbox[2] - c_bbox[0]
+                c_th = c_bbox[3] - c_bbox[1]
+                c_tx = mx - c_tw / 2.0
+                c_ty = my + (t_font_sz * 0.15) + (s_font_sz * 1.50)
+
+                # Shadow
+                draw.text((c_tx + 1, c_ty + 1), coords, font=c_font, fill=(0, 0, 0))
+                draw.text((c_tx - 1, c_ty + 1), coords, font=c_font, fill=(0, 0, 0))
+                # Subtle celestial platinum silver
+                draw.text((c_tx, c_ty), coords, font=c_font, fill=(160, 165, 185))
+
         out_img = cv2.cvtColor(np.array(pil_img), cv2.COLOR_RGB2BGR)
 
     return out_img
 
 
-def generate_circular_composite(samples, width=1280, height=720, orbit_radius=None, direction="cw", disk_scale_factor=0.78, show_labels=False, contacts="auto"):
+def generate_circular_composite(
+    samples, width=1280, height=720, orbit_radius=None, direction="cw",
+    disk_scale_factor=0.78, show_labels=False, contacts="auto",
+    show_info=True, lat_deg=43.235556, lon_deg=-7.558333, alt_m=438.7
+):
     cx, cy = width / 2.0, height / 2.0
 
     # For square format (W == H): Rx == Ry (perfect circle)
@@ -712,7 +823,32 @@ def generate_circular_composite(samples, width=1280, height=720, orbit_radius=No
                 }
             ]
 
-    return render_consistent_scale(samples, positions, width=width, height=height, disk_scale_factor=disk_scale_factor, show_labels=show_labels, featured_contacts=featured_contacts_data)
+    metadata_block = None
+    if show_info and len(samples) > 0:
+        first_dt = samples[0]["timestamp_dt"]
+        last_dt = samples[-1]["timestamp_dt"]
+        y_meta = cy + ry * 0.48
+
+        lat_str = f"{abs(lat_deg):.4f}° {'N' if lat_deg >= 0 else 'S'}"
+        lon_str = f"{abs(lon_deg):.4f}° {'E' if lon_deg >= 0 else 'W'}"
+        alt_str = f"ALT: {alt_m:.1f} M" if alt_m % 1 != 0 else f"ALT: {int(alt_m)} M"
+        coords_str = f"{lat_str}, {lon_str} · {alt_str}"
+
+        metadata_block = {
+            "title": "TOTAL SOLAR ECLIPSE · AUGUST 12, 2026",
+            "subtitle": f"OBSERVATION SEQUENCE: {first_dt.strftime('%H:%M:%S')} – {last_dt.strftime('%H:%M:%S')} CEST",
+            "coords": coords_str,
+            "pos": (cx, y_meta)
+        }
+
+    return render_consistent_scale(
+        samples, positions,
+        width=width, height=height,
+        disk_scale_factor=disk_scale_factor,
+        show_labels=show_labels,
+        featured_contacts=featured_contacts_data,
+        metadata_block=metadata_block
+    )
 
 
 def generate_sinusoid_composite(samples, width=1280, height=720, margin=None, amplitude=None, disk_scale_factor=0.78, show_labels=False, contacts="auto"):
@@ -740,54 +876,54 @@ def generate_sinusoid_composite(samples, width=1280, height=720, margin=None, am
     # Compute Featured Totality Contacts (C2, TOTAL, C3) in lower central vault if enabled
     featured_contacts_data = None
     if contacts and contacts != "none":
-        c2_sample = next((s for s in samples if s.get("label") == "ingress_beads"), None)
-        if c2_sample is None:
-            c2_sample = next((s for s in samples if s.get("phase") == "totality"), None)
+        tot_idx = [i for i, s in enumerate(samples) if s["phase"] == "totality"]
+        if tot_idx:
+            apex_idx = tot_idx[len(tot_idx) // 2]
+            apex_pos = positions[apex_idx]
 
-        tot_sample = next((s for s in samples if s.get("label") == "grand_corona"), None)
-        if tot_sample is None:
-            tot_samples = [s for s in samples if s.get("phase") == "totality"]
-            tot_sample = tot_samples[len(tot_samples) // 2] if tot_samples else None
+            c2_sample = next((s for s in samples if s.get("label") == "ingress_beads"), None)
+            if c2_sample is None:
+                c2_sample = next((s for s in samples if s.get("phase") == "totality"), None)
 
-        c3_sample = next((s for s in samples if s.get("label") == "egress_beads"), None)
-        if c3_sample is None:
-            tot_samples = [s for s in samples if s.get("phase") == "totality"]
-            c3_sample = tot_samples[-1] if tot_samples else None
+            tot_sample = samples[apex_idx]
 
-        if c2_sample and tot_sample and c3_sample:
-            diffs = np.diff(positions, axis=0)
-            dists = np.sqrt(np.sum(diffs**2, axis=1))
-            min_d = float(np.min(dists)) if len(dists) > 0 else 300.0
-            outer_disk_d = min_d * disk_scale_factor
+            c3_sample = next((s for s in samples if s.get("label") == "egress_beads"), None)
+            if c3_sample is None:
+                c3_sample = samples[tot_idx[-1]]
 
-            d_inner = outer_disk_d * 1.22
-            spacing = d_inner * 1.35
-            y_contacts = cy + amp * 0.52
+            if c2_sample and tot_sample and c3_sample:
+                diffs = np.diff(positions, axis=0)
+                dists = np.sqrt(np.sum(diffs**2, axis=1))
+                min_d = float(np.min(dists)) if len(dists) > 0 else 300.0
+                outer_disk_d = min_d * disk_scale_factor
 
-            p_c2 = np.array([cx - spacing, y_contacts], dtype=np.float32)
-            p_tot = np.array([cx, y_contacts], dtype=np.float32)
-            p_c3 = np.array([cx + spacing, y_contacts], dtype=np.float32)
+                d_inner = outer_disk_d * 1.15
+                contact_spacing = d_inner * 1.25
 
-            featured_contacts_data = [
-                {
-                    "sample": c2_sample,
-                    "pos": p_c2,
-                    "disk_d": d_inner,
-                    "label": f"C2 {c2_sample['timestamp_str']}"
-                },
-                {
-                    "sample": tot_sample,
-                    "pos": p_tot,
-                    "disk_d": d_inner,
-                    "label": f"MAX {tot_sample['timestamp_str']}"
-                },
-                {
-                    "sample": c3_sample,
-                    "pos": p_c3,
-                    "disk_d": d_inner,
-                    "label": f"C3 {c3_sample['timestamp_str']}"
-                }
-            ]
+                p_c2 = np.array([apex_pos[0] - contact_spacing, apex_pos[1] + amp * 0.95], dtype=np.float32)
+                p_tot = np.array([apex_pos[0], apex_pos[1] + amp * 0.95], dtype=np.float32)
+                p_c3 = np.array([apex_pos[0] + contact_spacing, apex_pos[1] + amp * 0.95], dtype=np.float32)
+
+                featured_contacts_data = [
+                    {
+                        "sample": c2_sample,
+                        "pos": p_c2,
+                        "disk_d": d_inner,
+                        "label": f"C2 {c2_sample['timestamp_str']}"
+                    },
+                    {
+                        "sample": tot_sample,
+                        "pos": p_tot,
+                        "disk_d": d_inner,
+                        "label": f"MAX {tot_sample['timestamp_str']}"
+                    },
+                    {
+                        "sample": c3_sample,
+                        "pos": p_c3,
+                        "disk_d": d_inner,
+                        "label": f"C3 {c3_sample['timestamp_str']}"
+                    }
+                ]
 
     return render_consistent_scale(samples, positions, width=width, height=height, disk_scale_factor=disk_scale_factor, show_labels=show_labels, featured_contacts=featured_contacts_data)
 
@@ -798,23 +934,21 @@ def generate_vertical_composite(samples, width=2160, height=3840, margin=None, d
     cx = width / 2.0
 
     ys = np.linspace(my, height - my, N)
-    positions = np.zeros((N, 2), dtype=np.float32)
-    for i, y in enumerate(ys):
-        positions[i, 0] = cx
-        positions[i, 1] = y
+    xs = np.full(N, cx, dtype=np.float32)
+    positions = np.column_stack([xs, ys]).astype(np.float32)
 
     return render_consistent_scale(samples, positions, width=width, height=height, disk_scale_factor=disk_scale_factor, show_labels=show_labels)
 
 
 def generate_vertical_sinusoid_composite(samples, width=2160, height=3840, margin=None, amplitude=None, disk_scale_factor=0.78, show_labels=False):
     N = len(samples)
-    my = margin or int(height * 0.08)
-    amp = amplitude or int(width * 0.25)
+    my = margin or int(height * 0.06)
+    amp = amplitude or int(width * 0.22)
     cx = width / 2.0
 
     dense_t = np.linspace(0.0, 1.0, 2000)
     dense_y = np.linspace(my, height - my, 2000)
-    dense_x = cx + amp * np.sin(dense_t * 2.0 * math.pi)
+    dense_x = cx + amp * np.sin(dense_t * 2.0 * np.pi - math.pi / 2.0)
 
     dx = np.diff(dense_x)
     dy = np.diff(dense_y)
@@ -826,6 +960,7 @@ def generate_vertical_sinusoid_composite(samples, width=2160, height=3840, margi
     interp_y = interp1d(cum_len, dense_y)
 
     positions = np.column_stack([interp_x(target_s), interp_y(target_s)]).astype(np.float32)
+
     return render_consistent_scale(samples, positions, width=width, height=height, disk_scale_factor=disk_scale_factor, show_labels=show_labels)
 
 
@@ -846,14 +981,12 @@ def generate_diagonal_composite(samples, width=1280, height=720, direction="bott
 
 def generate_horizontal_composite(samples, width=1280, height=720, margin=None, disk_scale_factor=0.78, show_labels=False):
     N = len(samples)
-    mx = margin or int(width * 0.05)
+    mx = margin or int(width * 0.06)
     cy = height / 2.0
 
     xs = np.linspace(mx, width - mx, N)
-    positions = np.zeros((N, 2), dtype=np.float32)
-    for i, x in enumerate(xs):
-        positions[i, 0] = x
-        positions[i, 1] = cy
+    ys = np.full(N, cy, dtype=np.float32)
+    positions = np.column_stack([xs, ys]).astype(np.float32)
 
     return render_consistent_scale(samples, positions, width=width, height=height, disk_scale_factor=disk_scale_factor, show_labels=show_labels)
 
@@ -862,18 +995,14 @@ def generate_arc_composite(samples, width=1280, height=720, margin_x=None, disk_
     N = len(samples)
     mx = margin_x or int(width * 0.08)
     cx = width / 2.0
+    cy = height * 0.65
 
-    # Expand arch vertically on portrait formats (height > width) to utilize canvas space generously
-    if height > width:
-        cy = height * 0.85
-        h_arc = height * 0.65
-    else:
-        cy = height * 0.70
-        h_arc = height * 0.40
+    rx = width * 0.42
+    ry = height * 0.38
 
-    dense_x = np.linspace(mx, width - mx, 2000)
-    norm_x = (dense_x - cx) / ((width - 2 * mx) / 2.0)
-    dense_y = cy - h_arc * (1.0 - norm_x**2)
+    dense_theta = np.linspace(math.pi * 0.85, math.pi * 0.15, 2000)
+    dense_x = cx + rx * np.cos(dense_theta)
+    dense_y = cy - ry * np.sin(dense_theta)
 
     dx = np.diff(dense_x)
     dy = np.diff(dense_y)
@@ -886,71 +1015,56 @@ def generate_arc_composite(samples, width=1280, height=720, margin_x=None, disk_
 
     positions = np.column_stack([interp_x(target_s), interp_y(target_s)]).astype(np.float32)
 
-    # Compute Featured Totality Contacts (C2, TOTAL, C3) in central vault of arc
     featured_contacts_data = None
     if contacts and contacts != "none":
-        c2_sample = next((s for s in samples if s.get("label") == "ingress_beads"), None)
-        if c2_sample is None:
-            c2_sample = next((s for s in samples if s.get("phase") == "totality"), None)
+        tot_idx = [i for i, s in enumerate(samples) if s["phase"] == "totality"]
+        if tot_idx:
+            apex_idx = tot_idx[len(tot_idx) // 2]
+            apex_pos = positions[apex_idx]
 
-        tot_sample = next((s for s in samples if s.get("label") == "grand_corona"), None)
-        if tot_sample is None:
-            tot_samples = [s for s in samples if s.get("phase") == "totality"]
-            tot_sample = tot_samples[len(tot_samples) // 2] if tot_samples else None
+            c2_sample = next((s for s in samples if s.get("label") == "ingress_beads"), None)
+            if c2_sample is None:
+                c2_sample = next((s for s in samples if s.get("phase") == "totality"), None)
 
-        c3_sample = next((s for s in samples if s.get("label") == "egress_beads"), None)
-        if c3_sample is None:
-            tot_samples = [s for s in samples if s.get("phase") == "totality"]
-            c3_sample = tot_samples[-1] if tot_samples else None
+            tot_sample = samples[apex_idx]
 
-        if c2_sample and tot_sample and c3_sample:
-            diffs = np.diff(positions, axis=0)
-            dists = np.sqrt(np.sum(diffs**2, axis=1))
-            min_d = float(np.min(dists)) if len(dists) > 0 else 300.0
-            outer_disk_d = min_d * disk_scale_factor
+            c3_sample = next((s for s in samples if s.get("label") == "egress_beads"), None)
+            if c3_sample is None:
+                c3_sample = samples[tot_idx[-1]]
 
-            if contacts == "vertical" or (contacts in ["auto", True] and height > width):
-                is_vert = True
-            else:
-                is_vert = False
+            if c2_sample and tot_sample and c3_sample:
+                diffs = np.diff(positions, axis=0)
+                dists = np.sqrt(np.sum(diffs**2, axis=1))
+                min_d = float(np.min(dists)) if len(dists) > 0 else 300.0
+                outer_disk_d = min_d * disk_scale_factor
 
-            if is_vert:
-                # Vertical Contacts for portrait frames: C2 top, TOTAL center, C3 bottom
-                d_inner = outer_disk_d * 1.22
-                spacing = d_inner * 1.30
-                contacts_cy = cy - h_arc * 0.40
-                p_c2 = np.array([cx, contacts_cy - spacing], dtype=np.float32)
-                p_tot = np.array([cx, contacts_cy], dtype=np.float32)
-                p_c3 = np.array([cx, contacts_cy + spacing], dtype=np.float32)
-            else:
-                # Horizontal Contacts for landscape frames: C2 left, TOTAL center, C3 right
-                d_inner = outer_disk_d * 1.22
-                spacing = d_inner * 1.35
-                y_contacts = height * 0.74
-                p_c2 = np.array([cx - spacing, y_contacts], dtype=np.float32)
-                p_tot = np.array([cx, y_contacts], dtype=np.float32)
-                p_c3 = np.array([cx + spacing, y_contacts], dtype=np.float32)
+                d_inner = outer_disk_d * 1.15
+                contact_spacing = d_inner * 1.25
 
-            featured_contacts_data = [
-                {
-                    "sample": c2_sample,
-                    "pos": p_c2,
-                    "disk_d": d_inner,
-                    "label": f"C2 {c2_sample['timestamp_str']}"
-                },
-                {
-                    "sample": tot_sample,
-                    "pos": p_tot,
-                    "disk_d": d_inner,
-                    "label": f"MAX {tot_sample['timestamp_str']}"
-                },
-                {
-                    "sample": c3_sample,
-                    "pos": p_c3,
-                    "disk_d": d_inner,
-                    "label": f"C3 {c3_sample['timestamp_str']}"
-                }
-            ]
+                p_c2 = np.array([apex_pos[0] - contact_spacing, apex_pos[1] + ry * 0.55], dtype=np.float32)
+                p_tot = np.array([apex_pos[0], apex_pos[1] + ry * 0.55], dtype=np.float32)
+                p_c3 = np.array([apex_pos[0] + contact_spacing, apex_pos[1] + ry * 0.55], dtype=np.float32)
+
+                featured_contacts_data = [
+                    {
+                        "sample": c2_sample,
+                        "pos": p_c2,
+                        "disk_d": d_inner,
+                        "label": f"C2 {c2_sample['timestamp_str']}"
+                    },
+                    {
+                        "sample": tot_sample,
+                        "pos": p_tot,
+                        "disk_d": d_inner,
+                        "label": f"MAX {tot_sample['timestamp_str']}"
+                    },
+                    {
+                        "sample": c3_sample,
+                        "pos": p_c3,
+                        "disk_d": d_inner,
+                        "label": f"C3 {c3_sample['timestamp_str']}"
+                    }
+                ]
 
     return render_consistent_scale(
         samples, positions,
@@ -962,31 +1076,18 @@ def generate_arc_composite(samples, width=1280, height=720, margin_x=None, disk_
 
 
 def generate_spiral_composite(samples, width=3840, height=3840, turns=None, power=0.88, direction="cw", disk_scale_factor=0.78, show_labels=False):
-    """
-    Generates an inward Archimedean/power spiral progression starting at the
-    outer canvas perimeter (Frame 0) and winding inwards to the canvas center (Frame N-1).
-    Designed exclusively for square frames (e.g. 3840p, 7680p 8K) to fill the space
-    harmoniously with equal arc-length spacing between consecutive disks.
-    Central featured contacts are disabled for this layout.
-    """
-    if width != height:
-        print(f"  [WARN] Spiral layout requires a square frame. Adjusting {width}x{height} -> {min(width, height)}x{min(width, height)}")
-        width = min(width, height)
-        height = width
-
-    N = len(samples)
     cx, cy = width / 2.0, height / 2.0
-    r_max = width * 0.41
+    r_max = min(width, height) * 0.44
+    r_min = min(width, height) * 0.08
+    num_turns = turns or 2.2
+    N = len(samples)
 
-    if turns is None:
-        turns = 2.0 if N >= 18 else 1.65
+    theta_total = num_turns * 2.0 * math.pi
+    dense_theta = np.linspace(0.0, theta_total, 4000)
 
-    theta_max = turns * 2.0 * math.pi
-    dense_theta = np.linspace(0.0, theta_max, 4000)
-    # Starts at outer radius r_max and winds inward to center (r=0)
-    dense_r = (((theta_max - dense_theta) / theta_max) ** power) * r_max
+    t_norm = dense_theta / theta_total
+    dense_r = r_min + (r_max - r_min) * (t_norm ** power)
 
-    # Starting angle: pointing straight up (-pi/2) at outer edge, spiraling inward
     if direction == "ccw":
         dense_x = cx + dense_r * np.cos(-dense_theta - math.pi / 2.0)
         dense_y = cy + dense_r * np.sin(-dense_theta - math.pi / 2.0)
@@ -1005,7 +1106,6 @@ def generate_spiral_composite(samples, width=3840, height=3840, turns=None, powe
 
     positions = np.column_stack([interp_x(target_s), interp_y(target_s)]).astype(np.float32)
 
-    # Spiral layout intentionally does not use inner contacts as the sequence itself fills the center
     return render_consistent_scale(samples, positions, width=width, height=height, disk_scale_factor=disk_scale_factor, show_labels=show_labels, featured_contacts=None)
 
 
@@ -1027,6 +1127,10 @@ def build_composite(
     force_db=False,
     show_labels=False,
     contacts="auto",
+    show_info=True,
+    lat_deg=43.235556,
+    lon_deg=-7.558333,
+    alt_m=438.7,
     num_samples=None,
     out_dir="040_out",
     output_path=None,
@@ -1044,6 +1148,7 @@ def build_composite(
     print(f"  Target Frames     : {target_num_samples}")
     print(f"  Disk Scale Factor : {disk_scale_factor:.2f}")
     print(f"  Labels (Timestamps): {'ENABLED (HH:MM:SS)' if show_labels else 'DISABLED'}")
+    print(f"  Metadata Block    : {'ENABLED (Title + Range + GPS)' if show_info else 'DISABLED'}")
     if layout in ["circle", "ring", "ellipse", "oval", "sinusoid", "s-curve", "s", "sinusoidal", "arc"]:
         print(f"  Totality Contacts : {contacts.upper()} (C2, MAX, C3)")
 
@@ -1073,6 +1178,10 @@ def build_composite(
             disk_scale_factor=disk_scale_factor,
             show_labels=show_labels,
             contacts=contacts,
+            show_info=show_info,
+            lat_deg=lat_deg,
+            lon_deg=lon_deg,
+            alt_m=alt_m,
         )
         suffix = "circle" if width == height else "ellipse"
 
@@ -1152,10 +1261,20 @@ def build_composite(
     else:
         raise ValueError(f"Unknown layout: '{layout}'. Choose sinusoid/vertical/vertical-s/circle/diagonal/horizontal/arc/spiral.")
 
-    # Save image files
-    res_tag = f"{width}p" if width == height else f"{width}x{height}"
-    default_name = f"eclipse_composite_{suffix}_{res_tag}.png"
-    final_out = output_path or os.path.join(resolved_out, default_name)
+    # Output filenames
+    if output_path is not None:
+        final_out = output_path
+    else:
+        if width == height:
+            res_str = f"{width}p"
+        elif width >= 3840 or height >= 3840:
+            res_str = "4k"
+        elif width >= 1920 or height >= 1920:
+            res_str = "1080p"
+        else:
+            res_str = "720p"
+        final_out = os.path.join(resolved_out, f"eclipse_composite_{suffix}_{res_str}.png")
+
     if not os.path.isabs(final_out):
         repo_root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
         final_out = os.path.join(repo_root, final_out)
@@ -1165,14 +1284,25 @@ def build_composite(
     jpg_out = os.path.splitext(final_out)[0] + ".jpg"
     cv2.imwrite(jpg_out, canvas, [cv2.IMWRITE_JPEG_QUALITY, 95])
 
-    # Save JSON metadata with exact frame timestamps
+    # Save JSON metadata with exact frame timestamps and GPS info
     meta_json_path = os.path.splitext(final_out)[0] + ".json"
+    lat_str = f"{abs(lat_deg):.4f}° {'N' if lat_deg >= 0 else 'S'}"
+    lon_str = f"{abs(lon_deg):.4f}° {'E' if lon_deg >= 0 else 'W'}"
+    alt_str = f"ALT: {alt_m:.1f} M" if alt_m % 1 != 0 else f"ALT: {int(alt_m)} M"
+
     meta_data = {
         "layout": layout,
         "width": width,
         "height": height,
         "disk_scale_factor": disk_scale_factor,
         "show_labels": show_labels,
+        "show_info": show_info,
+        "observer_location": {
+            "latitude_deg": lat_deg,
+            "longitude_deg": lon_deg,
+            "altitude_m": alt_m,
+            "coordinates_str": f"{lat_str}, {lon_str} · {alt_str}"
+        },
         "contacts": contacts,
         "sample_count": len(samples),
         "first_sample_time": first_dt.strftime("%H:%M:%S CEST"),
@@ -1246,6 +1376,16 @@ if __name__ == "__main__":
                         help="Force rebuilding/refreshing eclipse database")
     parser.add_argument("--show-labels", "--timestamps", "--labels", "-t", action="store_true",
                         help="Overlay centered HH:MM:SS timestamp labels below each solar disk")
+    parser.add_argument("--info", "--metadata", "-i", dest="show_info", action="store_true", default=True,
+                        help="Overlay central astronomical title, observation sequence duration and GPS coordinates (default: True)")
+    parser.add_argument("--no-info", "--no-metadata", dest="show_info", action="store_false",
+                        help="Disable central astronomical metadata block")
+    parser.add_argument("--lat", type=float, default=43.235556,
+                        help="Observer Latitude in decimal degrees (default: 43.235556 N)")
+    parser.add_argument("--lon", type=float, default=-7.558333,
+                        help="Observer Longitude in decimal degrees (default: -7.558333 W)")
+    parser.add_argument("--alt", type=float, default=438.7,
+                        help="Observer Altitude in meters (default: 438.7m)")
     parser.add_argument("--contacts", type=str, nargs="?", const="auto",
                         choices=["auto", "horizontal", "vertical", "none"], default="auto",
                         help="Featured totality contacts sequence (C2, TOTAL, C3) layout (auto/horizontal/vertical/none, default: auto)")
@@ -1287,6 +1427,10 @@ if __name__ == "__main__":
             force_db=args.force_db,
             show_labels=args.show_labels,
             contacts=args.contacts,
+            show_info=args.show_info,
+            lat_deg=args.lat,
+            lon_deg=args.lon,
+            alt_m=args.alt,
             num_samples=args.frames,
             out_dir="040_out",
             output_path=args.output if args.layout != "all" else None,

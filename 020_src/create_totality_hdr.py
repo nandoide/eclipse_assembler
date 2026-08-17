@@ -4,9 +4,9 @@
 TOTALITY HDR MULTI-EXPOSURE COMPOSITE ENGINE & AI PROMPT ADAPTER
 =============================================================================
 Extracts key temporal phases of solar totality from video footage, computes
-an authentic high-fidelity local HDR composite via OpenCV (multiscale coronal
-streamer synthesis, ruby H-alpha prominence enhancement, discrete PSF pearl
-bead rendering, and pure black lunar masking), and dynamically constructs an
+an authentic high-fidelity local HDR composite via OpenCV using Druckmüller
+radial normalization, ruby H-alpha prominence enhancement, discrete PSF pearl
+bead rendering, and pure black lunar masking, and dynamically constructs an
 optimized, feature-adapted prompt for web-based multi-modal AI generation
 (Nano Banana / Gemini / ChatGPT).
 
@@ -182,7 +182,7 @@ def generate_local_opencv_composite(
 ) -> np.ndarray:
     """
     Generates an authentic, high-fidelity local mathematical HDR composite using OpenCV:
-      1. Multiscale dipolar coronal streamer synthesis with logarithmic radial compression.
+      1. Druckmüller Adaptive Radial Normalization for natural dipolar coronal streamers.
       2. Authentic ruby-red H-alpha prominence layer with smooth angular sector transitions.
       3. Point Spread Function (PSF) diamond pearl Baily's beads rendering.
       4. Anti-aliased pure zero-noise black Moon disk.
@@ -201,140 +201,141 @@ def generate_local_opencv_composite(
     f_eg = aligned_frames['5_baily_eg']
 
     # -------------------------------------------------------------------------
-    # 1. Base Corona Processing (Multiscale Streamer Enhancement & Platinum Tint)
+    # 1. Base Corona: Druckmüller Adaptive Radial Normalization
     # -------------------------------------------------------------------------
-    mid_lab = cv2.cvtColor(f_mid, cv2.COLOR_BGR2LAB).astype(np.float32)
-    L = mid_lab[:, :, 0]
+    gray_mid = cv2.cvtColor(f_mid, cv2.COLOR_BGR2GRAY).astype(np.float32)
 
-    # Adaptive radial gain: suppress saturated inner ring by ~42%, boost outer streamers
-    gain_inner = 0.58 + 0.42 * (1.0 - np.exp(-r_diff / 32.0))
-    gain_outer = 1.0 + 1.4 * (r_diff / 110.0)**1.1 * np.exp(-r_diff / 200.0)
-    space_fade = 1.0 / (1.0 + np.exp((dist - 380.0) / 24.0))
+    r_int = np.clip(np.round(r_diff).astype(int), 0, 450)
+    mean_r = np.zeros(451, dtype=np.float32)
+    std_r  = np.zeros(451, dtype=np.float32)
 
-    L_balanced = L * gain_inner * gain_outer * space_fade
+    for ri in range(451):
+        mask = (r_int == ri) & (dist >= target_radius)
+        if np.any(mask):
+            mean_r[ri] = np.mean(gray_mid[mask])
+            std_r[ri]  = np.std(gray_mid[mask])
+        else:
+            mean_r[ri] = mean_r[max(0, ri - 1)]
+            std_r[ri]  = std_r[max(0, ri - 1)]
 
-    # Multiscale fiber unsharp mask for fine coronal ray fibers
-    L_b1 = cv2.GaussianBlur(L_balanced, (0, 0), 2.2)
-    L_b2 = cv2.GaussianBlur(L_balanced, (0, 0), 8.5)
-    L_b3 = cv2.GaussianBlur(L_balanced, (0, 0), 25.0)
+    mean_2d = mean_r[r_int]
+    std_2d  = std_r[r_int]
 
-    detail = (L_balanced - L_b1) * 1.5 + (L_b1 - L_b2) * 1.1 + (L_b2 - L_b3) * 0.5
-    L_hdr = np.clip(L_balanced * 1.30 + detail, 0.0, 255.0)
+    # Normalized high-frequency coronal streamer signal
+    norm_streamers = (gray_mid - mean_2d) / (std_2d + 3.5)
 
-    # Neutral platinum-white palette (remove sensor warm cast)
-    A_neut = (mid_lab[:, :, 1] - 128.0) * 0.12 + 128.0
-    B_neut = (mid_lab[:, :, 2] - 128.0) * 0.12 + 128.0
+    # Reference target mean and std profiles
+    ref_target_mean = 145.0 * np.exp(-((r_diff / 72.0) ** 0.88))
+    ref_target_std  = 40.0  * np.exp(-((r_diff / 78.0) ** 0.88))
 
-    corona_lab = np.stack([L_hdr, A_neut, B_neut], axis=2).astype(np.uint8)
-    corona_bgr = cv2.cvtColor(corona_lab, cv2.COLOR_LAB2BGR).astype(np.float32)
+    corona_druck = np.clip(ref_target_mean + norm_streamers * ref_target_std, 0.0, 255.0)
 
-    # Soft lunar limb mask
-    inner_mask = np.clip((dist - (target_radius - 0.5)) / 2.0, 0.0, 1.0)
-    corona_bgr = corona_bgr * inner_mask[:, :, np.newaxis]
+    # Smooth space fade
+    space_fade = 1.0 / (1.0 + np.exp((dist - 375.0) / 18.0))
+    corona_druck = corona_druck * space_fade
+
+    # Astrophotographic warm platinum color grading
+    corona_r = np.clip(corona_druck * 1.05, 0, 255)
+    corona_g = np.clip(corona_druck * 0.99, 0, 255)
+    corona_b = np.clip(corona_druck * 0.91, 0, 255)
+    corona_bgr = np.stack([corona_b, corona_g, corona_r], axis=2)
+
+    # Soft transition at lunar limb
+    limb_trans = np.clip((dist - (target_radius - 0.5)) / 1.5, 0.0, 1.0)[:, :, np.newaxis]
+    corona_bgr = corona_bgr * limb_trans
 
     # -------------------------------------------------------------------------
-    # 2. Western Prominence (C2 @ 8.0s) - Ruby H-alpha Plasma
+    # 2. Western Ruby H-alpha Prominences (C2 @ 8.0s)
     # -------------------------------------------------------------------------
     b2, g2, r2 = f_c2[:, :, 0].astype(np.float32), f_c2[:, :, 1].astype(np.float32), f_c2[:, :, 2].astype(np.float32)
-    excess2 = np.maximum(0.0, r2 - 1.08 * np.maximum(g2, b2))
-    in_ring2 = np.clip(1.0 - np.abs(dist - (target_radius + 4.5)) / 20.0, 0.0, 1.0)
+    excess2 = np.maximum(0.0, r2 - 0.90 * np.maximum(g2, b2))
 
     ang_diff2 = np.abs(np.abs(angles_deg) - 180.0)
-    ang_west_smooth = np.clip(1.0 - ang_diff2 / 38.0, 0.0, 1.0)
+    west_smooth = np.clip(1.0 - ang_diff2 / 34.0, 0.0, 1.0)
+    in_ring2 = np.clip(1.0 - np.abs(dist - (target_radius + 4.0)) / 22.0, 0.0, 1.0)
 
-    alpha2 = np.clip((excess2 - 4.0) / 14.0, 0.0, 1.0) * in_ring2 * ang_west_smooth
+    alpha2 = np.clip((excess2 - 4.0) / 12.0, 0.0, 1.0) * in_ring2 * west_smooth
     alpha2_f = cv2.GaussianBlur(alpha2, (0, 0), 0.45)[:, :, np.newaxis]
 
-    ruby2_r = np.clip(r2 * 1.90 + excess2 * 1.5, 0, 255)
-    ruby2_g = np.clip(g2 * 0.12 + excess2 * 0.05, 0, 255)
-    ruby2_b = np.clip(b2 * 0.35 + excess2 * 0.70, 0, 255)
+    ruby2_r = np.clip(r2 * 1.95 + excess2 * 1.6, 0, 255)
+    ruby2_g = np.clip(g2 * 0.15 + excess2 * 0.05, 0, 255)
+    ruby2_b = np.clip(b2 * 0.35 + excess2 * 0.65, 0, 255)
     prom2_bgr = np.stack([ruby2_b, ruby2_g, ruby2_r], axis=2)
 
     # -------------------------------------------------------------------------
-    # 3. Eastern Chromosphere & Spicules (C3 @ 98.0s)
+    # 3. Eastern Chromospheric Spicules (C3 @ 98.0s)
     # -------------------------------------------------------------------------
     b3, g3, r3 = f_c3[:, :, 0].astype(np.float32), f_c3[:, :, 1].astype(np.float32), f_c3[:, :, 2].astype(np.float32)
-    excess3 = np.maximum(0.0, r3 - 1.10 * np.maximum(g3, b3))
-    in_ring3 = np.clip(1.0 - np.abs(dist - (target_radius + 3.0)) / 14.0, 0.0, 1.0)
+    excess3 = np.maximum(0.0, r3 - 0.94 * np.maximum(g3, b3))
 
-    east_weight = np.clip(1.0 - np.abs(angles_deg) / 36.0, 0.0, 1.0)
-    top_weight = np.clip(1.0 - np.abs(angles_deg + 90.0) / 18.0, 0.0, 1.0)
-    east_top_smooth = np.maximum(east_weight, top_weight)
+    east_smooth = np.clip(1.0 - np.abs(angles_deg) / 36.0, 0.0, 1.0)
+    top_smooth  = np.clip(1.0 - np.abs(angles_deg + 90.0) / 16.0, 0.0, 1.0)
+    east_top_smooth = np.maximum(east_smooth, top_smooth)
+    in_ring3 = np.clip(1.0 - np.abs(dist - (target_radius + 3.0)) / 16.0, 0.0, 1.0)
 
-    alpha3 = np.clip((excess3 - 5.0) / 15.0, 0.0, 1.0) * in_ring3 * east_top_smooth
+    alpha3 = np.clip((excess3 - 5.0) / 14.0, 0.0, 1.0) * in_ring3 * east_top_smooth
     alpha3_f = cv2.GaussianBlur(alpha3, (0, 0), 0.45)[:, :, np.newaxis]
 
-    ruby3_r = np.clip(r3 * 1.90 + excess3 * 1.5, 0, 255)
-    ruby3_g = np.clip(g3 * 0.12 + excess3 * 0.05, 0, 255)
-    ruby3_b = np.clip(b3 * 0.35 + excess3 * 0.70, 0, 255)
+    ruby3_r = np.clip(r3 * 1.95 + excess3 * 1.6, 0, 255)
+    ruby3_g = np.clip(g3 * 0.15 + excess3 * 0.05, 0, 255)
+    ruby3_b = np.clip(b3 * 0.35 + excess3 * 0.65, 0, 255)
     prom3_bgr = np.stack([ruby3_b, ruby3_g, ruby3_r], axis=2)
 
     p_tot_alpha = np.clip(alpha2_f + alpha3_f, 0.0, 1.0)
     p_tot_bgr = np.maximum(prom2_bgr, prom3_bgr)
 
-    # Composite Prominences over Corona
-    comp = corona_bgr * (1.0 - 0.95 * p_tot_alpha) + p_tot_bgr * p_tot_alpha * 1.80
+    comp = corona_bgr * (1.0 - 0.90 * p_tot_alpha) + p_tot_bgr * p_tot_alpha * 1.85
 
     # -------------------------------------------------------------------------
-    # 4. Brilliant Discrete Baily's Beads (Diamond Pearls with PSF)
+    # 4. Brilliant Sparkling Baily's Beads (Diamond Pearl Necklace with PSF)
     # -------------------------------------------------------------------------
-    def render_diamond_beads(img, ang_min, ang_max, min_dist_peaks=6, threshold=75.0):
-        img_f = img.astype(np.float32)
-        b, g, r = img_f[:, :, 0], img_f[:, :, 1], img_f[:, :, 2]
-        lum = 0.299 * r + 0.587 * g + 0.114 * b
+    b_eg_flt = f_eg.astype(np.float32)
+    lum_eg = 0.299 * b_eg_flt[:, :, 2] + 0.587 * b_eg_flt[:, :, 1] + 0.114 * b_eg_flt[:, :, 0]
+    ang_eg_mask = ((angles_deg >= 32.0) & (angles_deg <= 82.0)).astype(float)
+    dist_eg_mask = np.clip(1.0 - np.abs(dist - (target_radius + 0.5)) / 6.0, 0.0, 1.0)
+    alpha_bead_eg = np.clip((lum_eg - 55.0) / 50.0, 0.0, 1.0) * ang_eg_mask * dist_eg_mask
 
-        N_samples = 1440
-        theta_samples = np.linspace(-np.pi, np.pi, N_samples, endpoint=False)
-        deg_samples = np.rad2deg(theta_samples)
+    b_in_flt = f_in.astype(np.float32)
+    lum_in = 0.299 * b_in_flt[:, :, 2] + 0.587 * b_in_flt[:, :, 1] + 0.114 * b_in_flt[:, :, 0]
+    ang_in_mask = (np.abs(np.abs(angles_deg) - 170.0) <= 22.0).astype(float)
+    dist_in_mask = np.clip(1.0 - np.abs(dist - (target_radius + 0.5)) / 6.0, 0.0, 1.0)
+    alpha_bead_in = np.clip((lum_in - 55.0) / 50.0, 0.0, 1.0) * ang_in_mask * dist_in_mask
 
-        xs = target_center[0] + (target_radius + 0.5) * np.cos(theta_samples)
-        ys = target_center[1] + (target_radius + 0.5) * np.sin(theta_samples)
+    tot_bead_alpha = np.clip(alpha_bead_in + alpha_bead_eg, 0.0, 1.0)
+    core_alpha = cv2.GaussianBlur(tot_bead_alpha, (0, 0), 0.5)[:, :, np.newaxis]
+    bloom_alpha = cv2.GaussianBlur(tot_bead_alpha, (0, 0), 2.2)[:, :, np.newaxis]
 
-        sampled_lum = cv2.remap(
-            lum.astype(np.float32),
-            xs.astype(np.float32).reshape(1, -1),
-            ys.astype(np.float32).reshape(1, -1),
-            cv2.INTER_LINEAR
-        ).flatten()
+    comp = comp * (1.0 - 0.50 * bloom_alpha) + np.array([230.0, 245.0, 255.0]) * bloom_alpha * 1.20
+    comp = comp * (1.0 - 0.85 * core_alpha) + np.array([255.0, 255.0, 255.0]) * core_alpha * 2.10
 
-        if ang_min < ang_max:
-            valid_mask = (deg_samples >= ang_min) & (deg_samples <= ang_max)
-        else:
-            valid_mask = (deg_samples >= ang_min) | (deg_samples <= ang_max)
+    # Discrete diamond sparkles overlay
+    N_samples = 1440
+    thetas = np.linspace(-np.pi, np.pi, N_samples, endpoint=False)
+    degs = np.rad2deg(thetas)
+    xs = target_center[0] + (target_radius + 0.5) * np.cos(thetas)
+    ys = target_center[1] + (target_radius + 0.5) * np.sin(thetas)
 
-        masked_profile = np.where(valid_mask, sampled_lum, 0.0)
-        peaks, _ = find_peaks(masked_profile, height=threshold, distance=min_dist_peaks)
+    prof_eg = cv2.remap(lum_eg, xs.astype(np.float32).reshape(1, -1), ys.astype(np.float32).reshape(1, -1), cv2.INTER_LINEAR).flatten()
+    mask_eg = np.where((degs >= 32.0) & (degs <= 82.0), prof_eg, 0.0)
+    peaks_eg, _ = find_peaks(mask_eg, height=60.0, distance=16)
 
-        bead_layer = np.zeros((h, w, 3), dtype=np.float32)
+    prof_in = cv2.remap(lum_in, xs.astype(np.float32).reshape(1, -1), ys.astype(np.float32).reshape(1, -1), cv2.INTER_LINEAR).flatten()
+    mask_in = np.where((degs >= 150.0) | (degs <= -160.0), prof_in, 0.0)
+    peaks_in, _ = find_peaks(mask_in, height=60.0, distance=20)
 
-        for p in peaks:
-            pk_lum = masked_profile[p]
-            pk_x = xs[p]
-            pk_y = ys[p]
+    bead_sparks = np.zeros((h, w, 3), dtype=np.float32)
+    for p in list(peaks_eg) + list(peaks_in):
+        px, py = xs[p], ys[p]
+        d_sq = (X - px)**2 + (Y - py)**2
+        core = np.exp(-d_sq / (2.0 * 1.2**2)) * 1.5
+        cross = (
+            np.exp(-np.abs(X - px) / 0.5) * np.exp(-np.abs(Y - py) / 4.5)
+            + np.exp(-np.abs(Y - py) / 0.5) * np.exp(-np.abs(X - px) / 4.5)
+        ) * 0.45
+        spark_rgb = (core + cross)[:, :, np.newaxis] * np.array([255.0, 255.0, 255.0])
+        bead_sparks += spark_rgb
 
-            intensity = np.clip((pk_lum - 50.0) / 95.0, 0.6, 1.8)
-            d_bead = np.sqrt((X - pk_x)**2 + (Y - pk_y)**2)
-
-            # Brilliant diamond core
-            core = np.exp(-d_bead**2 / (2.0 * 0.75**2)) * intensity
-            # Warm pearl bloom
-            bloom = np.exp(-d_bead**2 / (2.0 * 2.6**2)) * (intensity * 0.50)
-            # Subtle cross sparkle spikes
-            cross = (
-                np.exp(-np.abs(X - pk_x) / 0.55) * np.exp(-np.abs(Y - pk_y) / 4.0)
-                + np.exp(-np.abs(Y - pk_y) / 0.55) * np.exp(-np.abs(X - pk_x) / 4.0)
-            ) * (intensity * 0.28)
-
-            bead_rgb = (core + cross)[:, :, np.newaxis] * np.array([255.0, 255.0, 255.0]) + bloom[:, :, np.newaxis] * np.array([220.0, 245.0, 255.0])
-            bead_layer += bead_rgb
-
-        return bead_layer
-
-    b_in = render_diamond_beads(f_in, 145.0, -165.0, min_dist_peaks=12, threshold=55.0)
-    b_eg = render_diamond_beads(f_eg, 40.0, 80.0, min_dist_peaks=8, threshold=45.0)
-    beads_total = np.clip(b_in + b_eg, 0.0, 255.0)
-
-    comp = np.maximum(comp, beads_total)
+    comp = np.maximum(comp, np.clip(bead_sparks, 0, 255))
 
     # -------------------------------------------------------------------------
     # 5. Anti-Aliased Pure Void Black Moon Mask
