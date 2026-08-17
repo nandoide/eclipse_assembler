@@ -4,16 +4,18 @@
 TOTALITY HDR MULTI-EXPOSURE COMPOSITE ENGINE & AI PROMPT ADAPTER
 =============================================================================
 Extracts key temporal phases of solar totality from video footage, computes
-an immediate local HDR composite via OpenCV, and dynamically constructs an
+an authentic high-fidelity local HDR composite via OpenCV (multiscale coronal
+streamer synthesis, ruby H-alpha prominence enhancement, discrete PSF pearl
+bead rendering, and pure black lunar masking), and dynamically constructs an
 optimized, feature-adapted prompt for web-based multi-modal AI generation
 (Nano Banana / Gemini / ChatGPT).
 
 Key Phases Extracted:
-  1. Ingress Baily's Beads (t ≈ 2.0s)  - Diamond sparks & western limb
+  1. Ingress Baily's Beads (t ≈ 0.8s)  - Diamond sparks & western limb
   2. C2 Chromosphere & Prominence (t ≈ 8.0s) - Ruby H-alpha western flare
-  3. Mid-Totality Corona (t ≈ 51.7s)   - Soft, natural solar corona
+  3. Mid-Totality Corona (t ≈ 51.7s)   - Soft, natural dipolar solar corona
   4. C3 Chromosphere & Prominence (t ≈ 98.0s) - Carmine eastern limb features
-  5. Egress Baily's Beads (t ≈ 101.2s) - Diamond sparks along southeast limb
+  5. Egress Baily's Beads (t ≈ 102.2s) - Sparkling diamond necklace along southeast limb
 
 Author: nandoide / eclipse_assembler
 =============================================================================
@@ -24,6 +26,7 @@ import sys
 import argparse
 import cv2
 import numpy as np
+from scipy.signal import find_peaks
 
 
 def fit_lunar_limb_raytracing(
@@ -101,8 +104,7 @@ def extract_aligned_frame_at(cap, sec: float, fps: float, target_center=(640.0, 
 
 def angle_to_clock_position(radians: float) -> str:
     """Converts mathematical angle (0=East, pi/2=South, pi=West, -pi/2=North) to clock position."""
-    # Screen coordinates: X right, Y down
-    deg = np.degrees(radians) % 360.0  # 0=3 o'clock, 90=6 o'clock, 180=9 o'clock, 270=12 o'clock
+    deg = np.degrees(radians) % 360.0
     clock_hour = int(round((deg / 30.0) + 3.0)) % 12
     if clock_hour == 0:
         clock_hour = 12
@@ -178,11 +180,19 @@ def generate_local_opencv_composite(
     target_center=(640.0, 360.0),
     target_radius=246.0
 ) -> np.ndarray:
-    """Generates the local mathematical OpenCV HDR composite as an immediate offline output."""
+    """
+    Generates an authentic, high-fidelity local mathematical HDR composite using OpenCV:
+      1. Multiscale dipolar coronal streamer synthesis with logarithmic radial compression.
+      2. Authentic ruby-red H-alpha prominence layer with smooth angular sector transitions.
+      3. Point Spread Function (PSF) diamond pearl Baily's beads rendering.
+      4. Anti-aliased pure zero-noise black Moon disk.
+    """
     h, w = 720, 1280
     Y, X = np.ogrid[:h, :w]
     dist = np.sqrt((X - target_center[0])**2 + (Y - target_center[1])**2)
-    r_moon = target_radius
+    angles_rad = np.arctan2(Y - target_center[1], X - target_center[0])
+    angles_deg = np.rad2deg(angles_rad)
+    r_diff = np.maximum(0.0, dist - target_radius)
 
     f_in = aligned_frames['1_baily_in']
     f_c2 = aligned_frames['2_c2_prom']
@@ -190,58 +200,149 @@ def generate_local_opencv_composite(
     f_c3 = aligned_frames['4_c3_prom']
     f_eg = aligned_frames['5_baily_eg']
 
-    # 1. Base Corona
-    corona_gray = cv2.cvtColor(f_mid, cv2.COLOR_BGR2GRAY).astype(np.float32)
-    r_offset = np.maximum(0.0, dist - r_moon)
-    attenuation = np.clip(r_offset / 15.0, 0.40, 1.0)
-    outer_boost = np.clip(1.0 + (dist - r_moon) / 100.0, 1.0, 2.0)
-    corona_comp = corona_gray * attenuation * outer_boost
+    # -------------------------------------------------------------------------
+    # 1. Base Corona Processing (Multiscale Streamer Enhancement & Platinum Tint)
+    # -------------------------------------------------------------------------
+    mid_lab = cv2.cvtColor(f_mid, cv2.COLOR_BGR2LAB).astype(np.float32)
+    L = mid_lab[:, :, 0]
 
-    corona_rgb = np.stack([
-        corona_comp * 0.92,
-        corona_comp * 0.97,
-        corona_comp * 1.05
-    ], axis=2)
+    # Adaptive radial gain: suppress saturated inner ring by ~42%, boost outer streamers
+    gain_inner = 0.58 + 0.42 * (1.0 - np.exp(-r_diff / 32.0))
+    gain_outer = 1.0 + 1.4 * (r_diff / 110.0)**1.1 * np.exp(-r_diff / 200.0)
+    space_fade = 1.0 / (1.0 + np.exp((dist - 380.0) / 24.0))
 
-    # 2. Prominence Extraction
-    def extract_prominence(img):
-        f_flt = img.astype(np.float32)
-        b, g, r = f_flt[:, :, 0], f_flt[:, :, 1], f_flt[:, :, 2]
-        excess = np.maximum(0.0, r - np.maximum(g, b))
-        in_ring = np.clip(1.0 - np.abs(dist - (r_moon + 3.0)) / 20.0, 0.0, 1.0)
-        alpha = np.clip((excess - 10.0) / 40.0, 0.0, 1.0) * in_ring
-        alpha_feathered = cv2.GaussianBlur(alpha, (0, 0), 1.0)[:, :, np.newaxis]
-        return f_flt, alpha_feathered
+    L_balanced = L * gain_inner * gain_outer * space_fade
 
-    p2_rgb, p2_a = extract_prominence(f_c2)
-    p4_rgb, p4_a = extract_prominence(f_c3)
+    # Multiscale fiber unsharp mask for fine coronal ray fibers
+    L_b1 = cv2.GaussianBlur(L_balanced, (0, 0), 2.2)
+    L_b2 = cv2.GaussianBlur(L_balanced, (0, 0), 8.5)
+    L_b3 = cv2.GaussianBlur(L_balanced, (0, 0), 25.0)
 
-    # 3. Beads Extraction
-    def extract_beads(img):
-        f_flt = img.astype(np.float32)
-        b, g, r = f_flt[:, :, 0], f_flt[:, :, 1], f_flt[:, :, 2]
+    detail = (L_balanced - L_b1) * 1.5 + (L_b1 - L_b2) * 1.1 + (L_b2 - L_b3) * 0.5
+    L_hdr = np.clip(L_balanced * 1.30 + detail, 0.0, 255.0)
+
+    # Neutral platinum-white palette (remove sensor warm cast)
+    A_neut = (mid_lab[:, :, 1] - 128.0) * 0.12 + 128.0
+    B_neut = (mid_lab[:, :, 2] - 128.0) * 0.12 + 128.0
+
+    corona_lab = np.stack([L_hdr, A_neut, B_neut], axis=2).astype(np.uint8)
+    corona_bgr = cv2.cvtColor(corona_lab, cv2.COLOR_LAB2BGR).astype(np.float32)
+
+    # Soft lunar limb mask
+    inner_mask = np.clip((dist - (target_radius - 0.5)) / 2.0, 0.0, 1.0)
+    corona_bgr = corona_bgr * inner_mask[:, :, np.newaxis]
+
+    # -------------------------------------------------------------------------
+    # 2. Western Prominence (C2 @ 8.0s) - Ruby H-alpha Plasma
+    # -------------------------------------------------------------------------
+    b2, g2, r2 = f_c2[:, :, 0].astype(np.float32), f_c2[:, :, 1].astype(np.float32), f_c2[:, :, 2].astype(np.float32)
+    excess2 = np.maximum(0.0, r2 - 1.08 * np.maximum(g2, b2))
+    in_ring2 = np.clip(1.0 - np.abs(dist - (target_radius + 4.5)) / 20.0, 0.0, 1.0)
+
+    ang_diff2 = np.abs(np.abs(angles_deg) - 180.0)
+    ang_west_smooth = np.clip(1.0 - ang_diff2 / 38.0, 0.0, 1.0)
+
+    alpha2 = np.clip((excess2 - 4.0) / 14.0, 0.0, 1.0) * in_ring2 * ang_west_smooth
+    alpha2_f = cv2.GaussianBlur(alpha2, (0, 0), 0.45)[:, :, np.newaxis]
+
+    ruby2_r = np.clip(r2 * 1.90 + excess2 * 1.5, 0, 255)
+    ruby2_g = np.clip(g2 * 0.12 + excess2 * 0.05, 0, 255)
+    ruby2_b = np.clip(b2 * 0.35 + excess2 * 0.70, 0, 255)
+    prom2_bgr = np.stack([ruby2_b, ruby2_g, ruby2_r], axis=2)
+
+    # -------------------------------------------------------------------------
+    # 3. Eastern Chromosphere & Spicules (C3 @ 98.0s)
+    # -------------------------------------------------------------------------
+    b3, g3, r3 = f_c3[:, :, 0].astype(np.float32), f_c3[:, :, 1].astype(np.float32), f_c3[:, :, 2].astype(np.float32)
+    excess3 = np.maximum(0.0, r3 - 1.10 * np.maximum(g3, b3))
+    in_ring3 = np.clip(1.0 - np.abs(dist - (target_radius + 3.0)) / 14.0, 0.0, 1.0)
+
+    east_weight = np.clip(1.0 - np.abs(angles_deg) / 36.0, 0.0, 1.0)
+    top_weight = np.clip(1.0 - np.abs(angles_deg + 90.0) / 18.0, 0.0, 1.0)
+    east_top_smooth = np.maximum(east_weight, top_weight)
+
+    alpha3 = np.clip((excess3 - 5.0) / 15.0, 0.0, 1.0) * in_ring3 * east_top_smooth
+    alpha3_f = cv2.GaussianBlur(alpha3, (0, 0), 0.45)[:, :, np.newaxis]
+
+    ruby3_r = np.clip(r3 * 1.90 + excess3 * 1.5, 0, 255)
+    ruby3_g = np.clip(g3 * 0.12 + excess3 * 0.05, 0, 255)
+    ruby3_b = np.clip(b3 * 0.35 + excess3 * 0.70, 0, 255)
+    prom3_bgr = np.stack([ruby3_b, ruby3_g, ruby3_r], axis=2)
+
+    p_tot_alpha = np.clip(alpha2_f + alpha3_f, 0.0, 1.0)
+    p_tot_bgr = np.maximum(prom2_bgr, prom3_bgr)
+
+    # Composite Prominences over Corona
+    comp = corona_bgr * (1.0 - 0.95 * p_tot_alpha) + p_tot_bgr * p_tot_alpha * 1.80
+
+    # -------------------------------------------------------------------------
+    # 4. Brilliant Discrete Baily's Beads (Diamond Pearls with PSF)
+    # -------------------------------------------------------------------------
+    def render_diamond_beads(img, ang_min, ang_max, min_dist_peaks=6, threshold=75.0):
+        img_f = img.astype(np.float32)
+        b, g, r = img_f[:, :, 0], img_f[:, :, 1], img_f[:, :, 2]
         lum = 0.299 * r + 0.587 * g + 0.114 * b
-        in_limb = np.clip(1.0 - np.abs(dist - r_moon) / 7.0, 0.0, 1.0)
-        alpha = np.clip((lum - 130.0) / 50.0, 0.0, 1.0) * in_limb
-        alpha_feathered = cv2.GaussianBlur(alpha, (0, 0), 0.8)[:, :, np.newaxis]
-        return f_flt, alpha_feathered
 
-    b1_rgb, b1_a = extract_beads(f_in)
-    b5_rgb, b5_a = extract_beads(f_eg)
+        N_samples = 1440
+        theta_samples = np.linspace(-np.pi, np.pi, N_samples, endpoint=False)
+        deg_samples = np.rad2deg(theta_samples)
 
-    # Blend
-    p_tot_a = np.clip(p2_a + p4_a, 0.0, 1.0)
-    p_tot_rgb = np.maximum(p2_rgb, p4_rgb)
-    hdr = corona_rgb * (1.0 - 0.90 * p_tot_a) + p_tot_rgb * 1.35
-    hdr = np.maximum(hdr, corona_rgb * 0.70)
+        xs = target_center[0] + (target_radius + 0.5) * np.cos(theta_samples)
+        ys = target_center[1] + (target_radius + 0.5) * np.sin(theta_samples)
 
-    b_tot_a = np.clip(b1_a + b5_a, 0.0, 1.0)
-    b_tot_rgb = np.maximum(b1_rgb, b5_rgb)
-    hdr = hdr * (1.0 - 0.70 * b_tot_a) + b_tot_rgb * 1.40
-    hdr = np.maximum(hdr, corona_rgb * 0.50)
+        sampled_lum = cv2.remap(
+            lum.astype(np.float32),
+            xs.astype(np.float32).reshape(1, -1),
+            ys.astype(np.float32).reshape(1, -1),
+            cv2.INTER_LINEAR
+        ).flatten()
 
-    moon_mask = np.clip((dist - (r_moon - 1.5)) / 2.0, 0.0, 1.0)[:, :, np.newaxis]
-    return (hdr * moon_mask).clip(0, 255).astype(np.uint8)
+        if ang_min < ang_max:
+            valid_mask = (deg_samples >= ang_min) & (deg_samples <= ang_max)
+        else:
+            valid_mask = (deg_samples >= ang_min) | (deg_samples <= ang_max)
+
+        masked_profile = np.where(valid_mask, sampled_lum, 0.0)
+        peaks, _ = find_peaks(masked_profile, height=threshold, distance=min_dist_peaks)
+
+        bead_layer = np.zeros((h, w, 3), dtype=np.float32)
+
+        for p in peaks:
+            pk_lum = masked_profile[p]
+            pk_x = xs[p]
+            pk_y = ys[p]
+
+            intensity = np.clip((pk_lum - 50.0) / 95.0, 0.6, 1.8)
+            d_bead = np.sqrt((X - pk_x)**2 + (Y - pk_y)**2)
+
+            # Brilliant diamond core
+            core = np.exp(-d_bead**2 / (2.0 * 0.75**2)) * intensity
+            # Warm pearl bloom
+            bloom = np.exp(-d_bead**2 / (2.0 * 2.6**2)) * (intensity * 0.50)
+            # Subtle cross sparkle spikes
+            cross = (
+                np.exp(-np.abs(X - pk_x) / 0.55) * np.exp(-np.abs(Y - pk_y) / 4.0)
+                + np.exp(-np.abs(Y - pk_y) / 0.55) * np.exp(-np.abs(X - pk_x) / 4.0)
+            ) * (intensity * 0.28)
+
+            bead_rgb = (core + cross)[:, :, np.newaxis] * np.array([255.0, 255.0, 255.0]) + bloom[:, :, np.newaxis] * np.array([220.0, 245.0, 255.0])
+            bead_layer += bead_rgb
+
+        return bead_layer
+
+    b_in = render_diamond_beads(f_in, 145.0, -165.0, min_dist_peaks=12, threshold=55.0)
+    b_eg = render_diamond_beads(f_eg, 40.0, 80.0, min_dist_peaks=8, threshold=45.0)
+    beads_total = np.clip(b_in + b_eg, 0.0, 255.0)
+
+    comp = np.maximum(comp, beads_total)
+
+    # -------------------------------------------------------------------------
+    # 5. Anti-Aliased Pure Void Black Moon Mask
+    # -------------------------------------------------------------------------
+    moon_mask = np.clip((dist - (target_radius - 1.2)) / 1.5, 0.0, 1.0)[:, :, np.newaxis]
+    comp = comp * moon_mask
+
+    return np.clip(comp, 0, 255).astype(np.uint8)
 
 
 def run_pipeline(
@@ -254,14 +355,15 @@ def run_pipeline(
     os.makedirs(samples_dir, exist_ok=True)
 
     repo_root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
-    if not os.path.exists(video_path):
+    
+    # Auto-detect stabilized output video if available for optimal sub-pixel accuracy
+    alt_out = os.path.join(repo_root, "040_out", "03_video_realtime.mp4")
+    if os.path.exists(alt_out):
+        video_path = alt_out
+    elif not os.path.exists(video_path):
         candidate = os.path.join(repo_root, video_path)
         if os.path.exists(candidate):
             video_path = candidate
-        else:
-            alt_out = os.path.join(repo_root, "040_out", "03_video_realtime.mp4")
-            if os.path.exists(alt_out):
-                video_path = alt_out
 
     print("=================================================================")
     print("TOTALITY HDR COMPOSITE & AI PROMPT ADAPTER ENGINE")
@@ -277,13 +379,13 @@ def run_pipeline(
 
     fps = cap.get(cv2.CAP_PROP_FPS) or 30.0
 
-    # 5 Key Timestamps (Optimized with early Baily ingress at 2.0s)
+    # 5 Key Phases (Optimized for sparkling beads & prominence peak)
     timestamps = {
-        '1_baily_in': 2.0,
+        '1_baily_in': 0.8,
         '2_c2_prom': 8.0,
         '3_mid_corona': 51.7,
         '4_c3_prom': 98.0,
-        '5_baily_eg': 101.2
+        '5_baily_eg': 102.2
     }
 
     raw_paths = {}
@@ -304,10 +406,7 @@ def run_pipeline(
     print("\nGenerating local mathematical OpenCV HDR composite...")
     local_hdr = generate_local_opencv_composite(aligned_frames)
     local_path = os.path.join(out_dir, "totality_hdr_local.jpg")
-    master_path = os.path.join(out_dir, "totality_hdr.jpg")
     cv2.imwrite(local_path, local_hdr, [cv2.IMWRITE_JPEG_QUALITY, 98])
-    if not os.path.exists(master_path):
-        cv2.imwrite(master_path, local_hdr, [cv2.IMWRITE_JPEG_QUALITY, 98])
     print(f"  ✓ Local HDR Composite saved to: {local_path}")
 
     # 2. Detect Features & Programmatically Adapt Prompt
@@ -334,7 +433,7 @@ def run_pipeline(
     print("-" * 70)
     print(prompt)
     print("-" * 70)
-    print(f"\n3. Guarda la imagen generada en la web como: {master_path}")
+    print(f"\n3. Guarda la imagen resultante como: 010_in/05_totality_6.jpg")
     print("=" * 70 + "\n")
 
 
