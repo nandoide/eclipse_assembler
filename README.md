@@ -364,7 +364,38 @@ python 020_src/create_totality_hdr.py -v 010_in/03_video_realtime.mp4 -o 040_out
 > [!TIP]
 > **Workflow**: Save the resulting composite image (from web AI or the local OpenCV engine) as **`010_in/05_totality_6.jpg`**. The master build pipeline (`build_full_eclipse.py`) will automatically discover it, apply black letterbox padding, and tag it in subtitles and chapters.
 
-### 8. Ephemeris Database CLI & Refresh
+### 8. Film Assembly Layout Styles (`--film-style`)
+
+The master film assembler (`build_full_eclipse.py`) supports two distinct visual narrative layouts:
+
+```bash
+# 1. Standard Linear Sequence Montage (Default):
+python 020_src/build_full_eclipse.py --film-style standard
+
+# 2. Cinematic 'Art' Narrative Montage (Camera Dives & Totality Max Climax):
+python 020_src/build_full_eclipse.py --film-style art
+```
+
+| Montage Style | Structure & Narrative Flow | Key Visual Transitions |
+| :--- | :--- | :--- |
+| **`standard`** *(default)* | Linear chronological progression through all CoC numbered assets in `010_in/`. | Fades to black with customizable freeze holds between assets. |
+| **`art`** | 1. **Title Card** (`00_title.mp4`).<br>2. **Composite Overview & Continuous Ingress Dive** (`art_01_dive_in.mp4`): Holds full composite canvas $\to$ dives into first sample disk $\to$ dissolves seamlessly into telescope footage.<br>3. **Partial Ingress Timelapse** (`01_timelapse_i10.mp4`).<br>4. **Pre-Totality Slowdown** (`02_video_slowdown_10.mp4`).<br>5. **Real-Time Totality Part 1** up to Totality Max.<br>6. **Totality Multi-Exposure HDR Artwork Insert** (`05_totality_6.mp4`): Crossfades smoothly at Max Eclipse ($t = 20:28:23\text{ CEST}$), holds, and crossfades back into footage.<br>7. **Real-Time Totality Part 2** from Totality Max through C3.<br>8. **Partial Egress Timelapse** (`04_timelapse_i10.mp4`).<br>9. **Continuous Egress Zoom-Out Dive** (`art_02_dive_out.mp4`): Zooms out from last sample disk back to full composite overview.<br>10. **Closing Credits & End Titles** (`07_endtitles.mp4`). | Continuous sub-pixel Lanczos-4 camera zoom dives + 0.8s crossfade dissolves at Totality Max. |
+
+### 9. Continuous Camera Dive Engine (`create_camera_dive.py`)
+Generates high-precision, sub-pixel Lanczos-4 affine camera dives between high-resolution composite mosaics (4K/8K) and telescope video footage:
+- **Quintic Smooth Easing**: Perceptually uniform logarithmic scale acceleration ($S(t) = S_0 \cdot (S_1 / S_0)^{\sigma(t)}$).
+- **Sub-Pixel Warping**: High-quality sinc interpolation prevents edge shimmering and moiré artifacts during magnification.
+- **Reference Frame Dissolving**: Seamlessly dissolves into/out of the telescope video frames at the dive endpoints.
+
+```bash
+# Standalone Ingress Zoom-In Dive:
+python 020_src/create_camera_dive.py --composite 040_out/art_composite_4k_arc.png --meta 040_out/art_composite_4k_arc.json --sample 0 --direction zoom_in -o 040_out/art_01_dive_in.mp4
+
+# Standalone Egress Zoom-Out Dive:
+python 020_src/create_camera_dive.py --composite 040_out/art_composite_4k_arc.png --meta 040_out/art_composite_4k_arc.json --sample -1 --direction zoom_out -o 040_out/art_02_dive_out.mp4
+```
+
+### 10. Ephemeris Database CLI & Refresh
 ```bash
 # Query ephemeris contacts for auto-detected date:
 python 020_src/eclipse_ephemeris_db.py
@@ -376,13 +407,13 @@ python 020_src/eclipse_ephemeris_db.py --date 2026-08-12
 python 020_src/eclipse_ephemeris_db.py --force-db
 ```
 
-### 9. Lightweight 30-Second Compact Video (for Easy Sharing)
+### 11. Lightweight 30-Second Compact Video (for Easy Sharing)
 Generates an accelerated, universally compatible 30-second version in H.264 (~1.19 MB in 720p HD) for quick distribution via messaging apps (WhatsApp, Telegram) or social media:
 ```bash
 python 020_src/create_compact_clip.py
 ```
 
-### 9. Force Re-processing from Scratch
+### 12. Force Re-processing from Scratch
 ```bash
 python 020_src/build_full_eclipse.py --force-all
 ```
@@ -406,10 +437,13 @@ eclipse_assembler/
 │   ├── 04_timelapse_i10.mp4          # Egress time-lapse (1 frame every 10s)
 │   ├── 05_totality_6.jpg             # Totality HDR multi-phase artwork (6s hold)
 │   ├── 06_composite_arc_10           # On-the-fly composite mosaic (10s hold)
-│   └── 07_endtitles.md               # Closing credits descriptor (6s hold)
+│   ├── 07_endtitles.md               # Closing credits descriptor (6s hold)
+│   └── 01_music_corrubedo_nandoide.wav # Optional musical soundtrack (CoC: NN_music_Title_Author.wav)
 │
 ├── 020_src/                          # Python source code
-│   ├── build_full_eclipse.py         # ★ CoC Master pipeline and assembly script
+│   ├── build_full_eclipse.py         # ★ CoC Master pipeline and assembly script (--film-style standard/art)
+│   ├── create_camera_dive.py         # ★ Continuous sub-pixel Lanczos-4 camera dive zoom generator
+│   ├── add_audio_track.py            # ★ Intelligent musical phrase retargeting and audio muxing
 │   ├── create_totality_hdr.py        # ★ Totality HDR composite engine & dynamic AI prompt adapter
 │   ├── eclipse_ephemeris_db.py       # ★ Universal Solar/Lunar Besselian database & solver
 │   ├── fetch_eclipses_horizons.py    # ★ NASA JPL Horizons API fetcher & DB builder (2026-2036)
@@ -437,13 +471,18 @@ eclipse_assembler/
 │   ├── 06_composite_arc_10.json      # 📋 Frame timestamps metadata for composite
 │   ├── 07_endtitles.mp4              # Closing credits video clip (6.00s)
 │   ├── 07_endtitles.jpg              # High-resolution closing credits graphic
-│   ├── full_eclipse.mp4              # ★ Complete master film (181.60s)
-│   ├── full_eclipse_subtitled.mp4    # 🍎 Master film with embedded QuickTime subtitles (ES + EN)
-│   ├── full_eclipse_es.srt           # 🇪🇸 Spanish subtitles (YouTube / VLC)
-│   ├── full_eclipse_en.srt           # 🇬🇧 English subtitles (YouTube / VLC)
-│   ├── full_eclipse.srt              # Master English subtitle file
-│   ├── youtube_chapters.txt          # 📺 Ready-to-paste YouTube chapters (Bilingual / ES / EN)
-│   ├── youtube_description.txt       # 📝 Complete YouTube video description with ephemeris metadata
+│   ├── full_eclipse_standard_video.mp4# ★ Standard clean master film (with audio, no subs)
+│   ├── full_eclipse_standard.mp4     # 🍎 Standard subtitled master with QuickTime tracks (ES + EN)
+│   ├── full_eclipse_standard_es.srt  # 🇪🇸 Standard Spanish subtitles (YouTube / VLC)
+│   ├── full_eclipse_standard_en.srt  # 🇬🇧 Standard English subtitles (YouTube / VLC)
+│   ├── youtube_chapters_standard.txt # 📺 Standard YouTube chapters
+│   ├── youtube_description_standard.txt# 📝 Standard YouTube description
+│   ├── full_eclipse_art_video.mp4    # ★ Art clean master film (camera dives, totality HDR, with audio)
+│   ├── full_eclipse_art.mp4          # 🍎 Art subtitled master with QuickTime tracks (ES + EN)
+│   ├── full_eclipse_art_es.srt       # 🇪🇸 Art Spanish subtitles (YouTube / VLC)
+│   ├── full_eclipse_art_en.srt       # 🇬🇧 Art English subtitles (YouTube / VLC)
+│   ├── youtube_chapters_art.txt      # 📺 Art YouTube chapters
+│   ├── youtube_description_art.txt   # 📝 Art YouTube description
 │   ├── full_eclipse_30s.mp4          # ⚡ Compact 30s accelerated film
 │   ├── eclipse_contacts_comparison.md# 📊 Markdown telemetry vs ephemeris comparison report
 │   ├── eclipse_contacts_comparison.json# 📋 JSON dataset of observational residuals
@@ -468,14 +507,16 @@ eclipse_assembler/
 | **`03_video_realtime.mp4`** | 1280x720 | 30.0 fps | 107.33s (13.71 MB) | Totality & corona in exact 1x Real-Time |
 | **`04_timelapse_i10.mp4`** | 1280x720 | 30.0 fps | 8.20s (2.66 MB) | Stabilized partial egress ($R = 237.5\text{ px}$, speed x300) |
 | **`05_totality_6.mp4`** | 1280x720 | 30.0 fps | 6.00s (0.12 MB) | Letterboxed Totality HDR composite artwork video |
-| **`06_composite_arc_10.mp4`** | 1280x720 | 30.0 fps | 10.00s (0.05 MB) | Native 16:9 arc mosaic clip with prominent contacts |
+| **`06_composite_circle_4k_10.mp4`** | 1280x720 | 30.0 fps | 10.00s (0.05 MB) | Native 16:9 circular mosaic clip with prominent contacts |
 | **`07_endtitles.mp4`** | 1280x720 | 30.0 fps | 6.00s (0.07 MB) | Closing credits and production telemetry card |
-| **`full_eclipse.mp4`** | **1280x720** | **30.0 fps** | **181.60s (12.56 MB)** | 🎬 **Master film with title card, credits & cinematic transitions** |
-| **`full_eclipse_subtitled.mp4`** | **1280x720** | **30.0 fps** | **181.60s (12.58 MB)** | 🍎 **Master film with dual embedded QuickTime tracks (`mov_text`)** |
-| **`full_eclipse_es.srt`** | SubRip | UTF-8 | 52 entries | 🇪🇸 **Astronomical subtitles in Spanish with speed multipliers** |
-| **`full_eclipse_en.srt`** | SubRip | UTF-8 | 52 entries | 🇬🇧 **Astronomical subtitles in English with speed multipliers** |
-| **`youtube_chapters.txt`** | Plain Text | UTF-8 | 9 chapters | 📺 **YouTube chapters formatted for video timestamps** |
-| **`youtube_description.txt`** | Plain Text | UTF-8 | Description | 📝 **Ready-to-paste YouTube description with ephemeris & chapters** |
+| **`full_eclipse_art.mp4`** | **1280x720** | **30.0 fps** | **176.07s (20.25 MB)** | 🍎 **Master Film (Art): Dual QuickTime subs, camera dives, Totality HDR fusion & synced audio** |
+| **`full_eclipse_art_video.mp4`** | **1280x720** | **30.0 fps** | **176.07s (20.24 MB)** | 🎬 **Master Clean Film (Art): Clean video + synchronized audio track** |
+| **`full_eclipse_standard.mp4`** | **1280x720** | **30.0 fps** | **181.60s (19.59 MB)** | 🍎 **Master Film (Standard): Linear sequence with dual QuickTime subs & synced audio** |
+| **`full_eclipse_standard_video.mp4`** | **1280x720** | **30.0 fps** | **181.60s (19.58 MB)** | 🎬 **Master Clean Film (Standard): Clean linear video + synchronized audio track** |
+| **`full_eclipse_art_es.srt` / `_en.srt`** | SubRip | UTF-8 | Subtitles | 🇪🇸🇬🇧 **Astronomical subtitles for Art film with real-time telemetry** |
+| **`full_eclipse_standard_es.srt` / `_en.srt`** | SubRip | UTF-8 | Subtitles | 🇪🇸🇬🇧 **Astronomical subtitles for Standard film with real-time telemetry** |
+| **`youtube_chapters_art.txt`** | Plain Text | UTF-8 | Chapters | 📺 **YouTube chapters formatted for Art film timestamps** |
+| **`youtube_chapters_standard.txt`** | Plain Text | UTF-8 | Chapters | 📺 **YouTube chapters formatted for Standard film timestamps** |
 
 ---
 

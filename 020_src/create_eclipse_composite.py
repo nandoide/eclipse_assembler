@@ -247,7 +247,7 @@ def sample_eclipse_sequence(
         ]
         fracs_egress = [0.10, 0.25, 0.40, 0.55, 0.70, 0.85]
     elif num_samples == 14:
-        fracs_ingress = [0.38, 0.78]
+        fracs_ingress = [0.06, 0.62]
         fracs_pre_tot = [0.38, 0.78]
         tot_key_moments = [
             (3.45,   "ingress_beads"),        # C2 -> 20:27:35 CEST
@@ -257,7 +257,7 @@ def sample_eclipse_sequence(
             (98.00,  "egress_chromosphere"),  # 20:29:09 CEST
             (100.50, "egress_beads"),         # C3 -> 20:29:12 CEST
         ]
-        fracs_egress = [0.15, 0.35, 0.55, 0.75]
+        fracs_egress = [0.18, 0.42, 0.68, 0.92]
     else:
         tot_key_moments = [
             (3.45,   "ingress_beads"),
@@ -418,6 +418,12 @@ def render_consistent_scale(samples, positions, width=1280, height=720, disk_sca
     out_patch_sz = (out_patch_sz // 2) * 2
     half_patch = out_patch_sz // 2
 
+    # Record canvas coordinates and disk dimensions on all samples for camera dive tracking
+    for i in range(N):
+        samples[i]["canvas_x"] = float(positions[i][0])
+        samples[i]["canvas_y"] = float(positions[i][1])
+        samples[i]["canvas_disk_d"] = float(target_disk_d)
+
     # Draw partials first, then totality on top
     draw_order = [i for i, s in enumerate(samples) if s["phase"] == "partial"] + \
                  [i for i, s in enumerate(samples) if s["phase"] == "totality"]
@@ -493,7 +499,7 @@ def render_consistent_scale(samples, positions, width=1280, height=720, disk_sca
         draw = ImageDraw.Draw(pil_img)
 
         # Dynamic font sizing scaled to canvas and disk dimensions
-        font_sz = max(11, int(round(target_disk_d * 0.08)))
+        font_sz = max(12, int(round(target_disk_d * 0.095)))
 
         font = None
         for fp in [
@@ -595,8 +601,8 @@ def render_consistent_scale(samples, positions, width=1280, height=720, disk_sca
             sub = metadata_block.get("subtitle", "")
             mx, my = metadata_block.get("pos", (width / 2.0, height * 0.65))
 
-            # Title font
-            t_font_sz = max(18, int(round(min(width, height) * 0.0155)))
+            # Title font (enlarged for prominent elegance)
+            t_font_sz = max(22, int(round(min(width, height) * 0.023)))
             t_font = None
             for fp in [
                 "/System/Library/Fonts/Supplemental/Futura.ttc",
@@ -614,8 +620,8 @@ def render_consistent_scale(samples, positions, width=1280, height=720, disk_sca
             if t_font is None:
                 t_font = font
 
-            # Subtitle font (Sequence Duration)
-            s_font_sz = max(12, int(round(min(width, height) * 0.0105)))
+            # Subtitle font (Sequence Duration - enlarged)
+            s_font_sz = max(14, int(round(min(width, height) * 0.0145)))
             s_font = None
             for fp in [
                 "/System/Library/Fonts/Helvetica.ttc",
@@ -632,8 +638,8 @@ def render_consistent_scale(samples, positions, width=1280, height=720, disk_sca
             if s_font is None:
                 s_font = font
 
-            # Coordinates font (GPS & Elevation)
-            c_font_sz = max(11, int(round(min(width, height) * 0.0092)))
+            # Coordinates font (GPS & Elevation - enlarged)
+            c_font_sz = max(12, int(round(min(width, height) * 0.0125)))
             c_font = None
             for fp in [
                 "/System/Library/Fonts/Helvetica.ttc",
@@ -991,16 +997,43 @@ def generate_horizontal_composite(samples, width=1280, height=720, margin=None, 
     return render_consistent_scale(samples, positions, width=width, height=height, disk_scale_factor=disk_scale_factor, show_labels=show_labels)
 
 
-def generate_arc_composite(samples, width=1280, height=720, margin_x=None, disk_scale_factor=0.78, show_labels=False, contacts="auto"):
+def generate_arc_composite(
+    samples,
+    width=1280,
+    height=720,
+    margin_x=None,
+    disk_scale_factor=0.78,
+    show_labels=False,
+    contacts="auto",
+    show_info=False,
+    lat_deg=43.235556,
+    lon_deg=-7.558333,
+    alt_m=438.7
+):
     N = len(samples)
-    mx = margin_x or int(width * 0.08)
     cx = width / 2.0
-    cy = height * 0.65
 
-    rx = width * 0.42
-    ry = height * 0.38
+    is_portrait = height > width
+    theta_start = math.pi * 0.88
+    theta_end = math.pi * 0.12
+    sin_start = math.sin(theta_start)
+    cos_start = abs(math.cos(theta_start))
 
-    dense_theta = np.linspace(math.pi * 0.85, math.pi * 0.15, 2000)
+    if is_portrait:
+        y_apex = height * 0.12
+        y_ends = height * 0.86
+        x_margin = margin_x or int(width * 0.08)
+    else:
+        y_apex = height * 0.15
+        y_ends = height * 0.78
+        x_margin = margin_x or int(width * 0.08)
+
+    ry = (y_ends - y_apex) / (1.0 - sin_start)
+    cy = y_apex + ry
+
+    rx = (width / 2.0 - x_margin) / cos_start
+
+    dense_theta = np.linspace(theta_start, theta_end, 2000)
     dense_x = cx + rx * np.cos(dense_theta)
     dense_y = cy - ry * np.sin(dense_theta)
 
@@ -1038,12 +1071,15 @@ def generate_arc_composite(samples, width=1280, height=720, margin_x=None, disk_
                 min_d = float(np.min(dists)) if len(dists) > 0 else 300.0
                 outer_disk_d = min_d * disk_scale_factor
 
-                d_inner = outer_disk_d * 1.15
-                contact_spacing = d_inner * 1.25
+                # Inner contacts enlarged to 1.50x outer disk diameter
+                d_inner = outer_disk_d * 1.50
+                contact_spacing = d_inner * 1.35
 
-                p_c2 = np.array([apex_pos[0] - contact_spacing, apex_pos[1] + ry * 0.55], dtype=np.float32)
-                p_tot = np.array([apex_pos[0], apex_pos[1] + ry * 0.55], dtype=np.float32)
-                p_c3 = np.array([apex_pos[0] + contact_spacing, apex_pos[1] + ry * 0.55], dtype=np.float32)
+                # Optical vertical centering in the middle of the arch vault
+                y_contacts = height * (0.46 if show_info else 0.48)
+                p_c2 = np.array([cx - contact_spacing, y_contacts], dtype=np.float32)
+                p_tot = np.array([cx, y_contacts], dtype=np.float32)
+                p_c3 = np.array([cx + contact_spacing, y_contacts], dtype=np.float32)
 
                 featured_contacts_data = [
                     {
@@ -1066,12 +1102,31 @@ def generate_arc_composite(samples, width=1280, height=720, margin_x=None, disk_
                     }
                 ]
 
+    metadata_block = None
+    if show_info and len(samples) > 0:
+        first_dt = samples[0]["timestamp_dt"]
+        last_dt = samples[-1]["timestamp_dt"]
+        y_meta = height * 0.76
+
+        lat_str = f"{abs(lat_deg):.4f}° {'N' if lat_deg >= 0 else 'S'}"
+        lon_str = f"{abs(lon_deg):.4f}° {'E' if lon_deg >= 0 else 'W'}"
+        alt_str = f"ALT: {alt_m:.1f} M" if alt_m % 1 != 0 else f"ALT: {int(alt_m)} M"
+        coords_str = f"{lat_str}, {lon_str} · {alt_str}"
+
+        metadata_block = {
+            "title": "TOTAL SOLAR ECLIPSE · AUGUST 12, 2026",
+            "subtitle": f"OBSERVATION SEQUENCE: {first_dt.strftime('%H:%M:%S')} – {last_dt.strftime('%H:%M:%S')} CEST",
+            "coords": coords_str,
+            "pos": (cx, y_meta)
+        }
+
     return render_consistent_scale(
         samples, positions,
         width=width, height=height,
         disk_scale_factor=disk_scale_factor,
         show_labels=show_labels,
-        featured_contacts=featured_contacts_data
+        featured_contacts=featured_contacts_data,
+        metadata_block=metadata_block
     )
 
 
@@ -1150,7 +1205,8 @@ def build_composite(
     print(f"  Labels (Timestamps): {'ENABLED (HH:MM:SS)' if show_labels else 'DISABLED'}")
     print(f"  Metadata Block    : {'ENABLED (Title + Range + GPS)' if show_info else 'DISABLED'}")
     if layout in ["circle", "ring", "ellipse", "oval", "sinusoid", "s-curve", "s", "sinusoidal", "arc"]:
-        print(f"  Totality Contacts : {contacts.upper()} (C2, MAX, C3)")
+        c_str = str(contacts).upper() if contacts else "DISABLED"
+        print(f"  Totality Contacts : {c_str} (C2, MAX, C3)")
 
     samples = sample_eclipse_sequence(
         out_dir=resolved_out,
@@ -1241,6 +1297,10 @@ def build_composite(
             disk_scale_factor=disk_scale_factor,
             show_labels=show_labels,
             contacts=contacts,
+            show_info=show_info,
+            lat_deg=lat_deg,
+            lon_deg=lon_deg,
+            alt_m=alt_m,
         )
         suffix = "arc"
 
@@ -1316,7 +1376,10 @@ def build_composite(
                 "fraction": round(float(s["fraction"]), 3),
                 "phase": s["phase"],
                 "label": s["label"],
-                "time_cest": s["timestamp_str"]
+                "time_cest": s["timestamp_str"],
+                "center_x": round(float(s.get("canvas_x", 0)), 2),
+                "center_y": round(float(s.get("canvas_y", 0)), 2),
+                "disk_diameter": round(float(s.get("canvas_disk_d", 0)), 2)
             }
             for idx, s in enumerate(samples)
         ]

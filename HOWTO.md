@@ -444,23 +444,64 @@ python 020_src/create_totality_hdr.py
 
 ---
 
-## 10. Master Film Concatenation & H.265 Broadcast Encoding
+## 10. Film Assembly Layout Styles (`standard` vs `art`)
+
+The master film assembler (`build_full_eclipse.py`) supports two distinct visual narrative layouts via the `--film-style` CLI parameter:
+
+### 10.1 Standard Linear Sequence Montage (`--film-style standard`)
+- Assembles all CoC numbered input assets chronologically:
+  $$\text{Title Card} \to \text{Ingress TL} \to \text{Slowdown} \to \text{Totality Video} \to \text{Egress TL} \to \text{Totality HDR} \to \text{Composite Mosaic} \to \text{End Titles}$$
+- Separated by customizable fade-to-black transitions with freeze holds.
+
+### 10.2 Cinematic 'Art' Narrative Montage (`--film-style art`)
+- A modern, continuous cinematic narrative that immerses the viewer into the eclipse geometry and returns smoothly:
+  1. **Title Card** (`00_title.mp4`): Dynamic astronomical metadata card.
+  2. **Composite Overview & Continuous Ingress Dive** (`art_01_dive_in.mp4`): 2.0s hold on full composite mosaic $\to$ smooth 3.0s logarithmic quintic camera dive zooming $8\times$ into sample frame 0 $\to$ dissolves seamlessly into telescope footage.
+  3. **Partial Ingress Timelapse** (`01_timelapse_i10.mp4`).
+  4. **Pre-Totality Slowdown** (`02_video_slowdown_10.mp4`).
+  5. **Real-Time Totality Part 1** (`art_03_totality_p1.mp4`): From C2 diamond ring up to Totality Max frame 1552.
+  6. **Totality Multi-Exposure HDR Artwork Insert** (`05_totality_6.mp4`): 0.8s crossfade dissolve directly at Max Eclipse ($t = 20:28:23\text{ CEST}$), holds for 6.0s, and crossfades back into the departure frame.
+  7. **Real-Time Totality Part 2** (`art_03_totality_p2.mp4`): From Totality Max through C3 diamond ring.
+  8. **Partial Egress Timelapse** (`04_timelapse_i10.mp4`).
+  9. **Continuous Egress Zoom-Out Dive** (`art_02_dive_out.mp4`): Starts dissolved from the last sample disk $\to$ continuous 3.0s zoom-out dive back to full composite overview $\to$ 2.0s hold on the full artwork.
+  10. **Closing Credits & End Titles** (`07_endtitles.mp4`).
+
+---
+
+## 11. Continuous Camera Dive Engine (`create_camera_dive.py`)
+
+Generates sub-pixel Lanczos-4 affine camera dives between high-resolution composite mosaics (4K/8K) and telescope video footage:
+- **Quintic Smooth Easing**: Perceptually uniform logarithmic scale acceleration ($S(t) = S_0 \cdot (S_1 / S_0)^{\sigma(t)}$).
+- **Sub-Pixel Warping**: High-quality sinc interpolation prevents edge shimmering and moiré artifacts during magnification.
+- **Reference Frame Dissolving**: Seamlessly dissolves into/out of the telescope video frames at the dive endpoints.
+
+```bash
+# Standalone Ingress Zoom-In Dive:
+python 020_src/create_camera_dive.py --composite 040_out/art_composite_4k_arc.png --meta 040_out/art_composite_4k_arc.json --sample 0 --direction zoom_in -o 040_out/art_01_dive_in.mp4
+
+# Standalone Egress Zoom-Out Dive:
+python 020_src/create_camera_dive.py --composite 040_out/art_composite_4k_arc.png --meta 040_out/art_composite_4k_arc.json --sample -1 --direction zoom_out -o 040_out/art_02_dive_out.mp4
+```
+
+---
+
+## 12. Master Film Concatenation & H.265 Broadcast Encoding
 
 `020_src/build_full_eclipse.py` orchestrates the complete assembly:
 
-1. **Cross-Asset Transition Fades**: Computes smooth 0.5s fade-to-black dips between differing exposure regimes.
+1. **Cross-Asset Transition Fades**: Computes smooth 0.5s fade-to-black dips or 0.8s crossfades between exposure regimes.
 2. **Memory-Safe Pipe Streaming**: Passes individual frames directly to FFmpeg via `stdin` Unix pipes to avoid gigabytes of intermediate temporary PNGs.
 3. **H.265 / HEVC Broadcast Encoding**:
    ```bash
    ffmpeg -y -f rawvideo -pix_fmt bgr24 -s 1280x720 -r 30 \
      -i - -c:v libx265 -preset fast -crf 16 \
-     -tag:v hvc1 -pix_fmt yuv420p 040_out/full_eclipse.mp4
+     -tag:v hvc1 -pix_fmt yuv420p 040_out/full_eclipse_<type>_video.mp4
    ```
    The `-tag:v hvc1` flag ensures native hardware decoding on macOS QuickTime Player, iOS Safari, Apple TV, and Windows Movies & TV.
 
 ---
 
-## 11. Step-by-Step Recipes & CLI Reference
+## 13. Step-by-Step Recipes & CLI Reference
 
 ### Environment Setup
 ```bash
@@ -476,11 +517,25 @@ pip install -r requirements.txt
 
 ---
 
-### Recipe 1: Build the Entire Master Film from Scratch
+### Recipe 1: Build the Master Film in Cinematic 'Art' Style (Recommended)
+```bash
+.venv/bin/python3 020_src/build_full_eclipse.py --film-style art
+```
+*Builds the complete camera dive intro/outro, splits totality video at Max eclipse with smooth HDR crossfade, synchronizes musical soundtrack, and exports QuickTime-ready subtitled MP4.*
+
+---
+
+### Recipe 2: Build the Standard Linear Master Film
+```bash
+.venv/bin/python3 020_src/build_full_eclipse.py --film-style standard
+```
+
+---
+
+### Recipe 3: Force Re-processing from Scratch
 ```bash
 .venv/bin/python3 020_src/build_full_eclipse.py --force-all
 ```
-*Processes all raw input clips, stabilizes them, generates title card, composite, subtitles, QuickTime MP4, and YouTube metadata.*
 
 ---
 

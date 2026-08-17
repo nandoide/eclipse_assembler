@@ -391,6 +391,7 @@ def add_audio_to_video(
         cmd.extend(["-map", "0:s?", "-c:s", "copy"])
 
     cmd.extend([
+        "-map_chapters", "0",
         "-map", "1:a:0",
         "-c:a", "aac",
         "-b:a", audio_bitrate,

@@ -34,6 +34,7 @@ Workspace: eclipse_assembler (branch: multi)
 import os
 import sys
 import re
+import json
 import argparse
 import subprocess
 import cv2
@@ -49,6 +50,7 @@ import create_end_titles as cet
 import create_eclipse_composite as cec
 import generate_eclipse_subtitles as ges
 import eclipse_ephemeris_db as eedb
+import create_camera_dive as ccd
 import add_audio_track as aat
 from stabilize_eclipse import extract_pure_solar_limb, find_circle_center_fixed_r
 
@@ -121,6 +123,12 @@ def parse_coc_filename(filepath):
             tok_l = tok.lower()
             if tok_l in ["sinusoid", "circle", "diagonal", "horizontal", "vertical", "arc", "ellipse", "vertical-s", "spiral"]:
                 layout = tok_l
+            elif tok_l in ["4k", "uhd"]:
+                comp_w = 3840
+                comp_h = 2160
+            elif tok_l in ["square", "1:1"]:
+                comp_w = 3840
+                comp_h = 3840
             elif "x" in tok_l:
                 res_parts = tok_l.split("x")
                 if len(res_parts) == 2 and res_parts[0].isdigit() and res_parts[1].isdigit():
@@ -882,12 +890,13 @@ def process_composite_asset(
     duration_s = asset_meta.get('duration', 10.0)
     idx = asset_meta.get('index', 6)
 
-    # 1. Generate high-res composite artwork image via build_composite (clean without timestamps, with contacts)
+    # 1. Generate high-res composite artwork image via build_composite (clean without timestamps, without metadata block, with contacts)
     composite_png = cec.build_composite(
         layout=layout,
         width=comp_w,
         height=comp_h,
         show_labels=False,
+        show_info=False,
         contacts="auto",
         out_dir=out_dir
     )
@@ -1099,13 +1108,340 @@ def assemble_master_film(
 
 
 # ─────────────────────────────────────────────────────────────────────────────
+# ART FILM ASSEMBLY (CAMERA DIVE & NARRATIVE MONTAGE)
+# ─────────────────────────────────────────────────────────────────────────────
+
+def assemble_art_film(
+    in_dir: str = "010_in",
+    out_dir: str = "040_out",
+    output_path: str = "040_out/full_eclipse.mp4",
+    master_w: int = 1280,
+    master_h: int = 720,
+    visual_assets: list = None,
+    no_title: bool = False,
+    title_duration: float = 5.0,
+    freeze_before: float = 1.0,
+    fade_out: float = 0.5,
+    black_duration: float = 0.0,
+    fade_in: float = 0.5,
+    fade_duration: float = 0.8,
+    freeze_after: float = 1.0,
+    fps: float = 30.0,
+    crf: int = 16,
+    preset: str = "fast",
+    music_asset: dict = None,
+    date_str: str = None,
+    force_all: bool = False
+):
+    """
+    Assembles the film in 'art' cinematic style:
+      1. Title Card (00_title.mp4) [fade_to_black]
+      2. Full Composite Overview & Ingress Zoom-In Dive (art_01_dive_in.mp4) [hard]
+      3. Ingress Timelapse (01_timelapse_i10.mp4) [fade_to_black]
+      4. Pre-totality Slowdown (02_video_slowdown_10.mp4) [fade_to_black]
+      5. Real-time Totality Part 1 (art_03_totality_p1.mp4) [crossfade 0.8s]
+      6. Multi-Exposure Totality HDR Artwork (05_totality_6.mp4) [crossfade 0.8s]
+      7. Real-time Totality Part 2 (art_03_totality_p2.mp4) [fade_to_black]
+      8. Egress Timelapse (04_timelapse_i10.mp4) [hard]
+      9. Egress Zoom-Out Dive & Full Composite Outro (art_02_dive_out.mp4) [fade_to_black]
+      10. Closing Credits & End Titles (07_endtitles.mp4)
+    """
+    print("=" * 65)
+    print(f"ASSEMBLING CINEMATIC 'ART' FILM: {output_path}")
+    print(f"  Resolution : {master_w}x{master_h} @ {fps:.2f} fps")
+    print(f"  Transitions: Dynamic (Camera Dives, Crossfades, Fades to Black)")
+    print("=" * 65)
+
+    # 1. Ensure Title Card exists if requested
+    title_path = os.path.join(out_dir, "00_title.mp4")
+    if not no_title and (not os.path.exists(title_path) or force_all):
+        ctc.generate_title_card(duration_s=title_duration, width=master_w, height=master_h, out_dir=out_dir, output_mp4=title_path, date_str=date_str)
+
+    # 2. Locate / generate composite 4k artwork for camera dive
+    comp_asset = next((a for a in (visual_assets or []) if a['asset_type'] == 'composite'), None)
+    comp_layout = comp_asset.get('layout', 'circle') if comp_asset else 'circle'
+    art_comp_png = os.path.join(out_dir, f"art_composite_4k_{comp_layout}.png")
+    art_comp_json = os.path.join(out_dir, f"art_composite_4k_{comp_layout}.json")
+    comp_regenerated = False
+    if not os.path.exists(art_comp_png) or force_all:
+        print(f"Generating 4K Ultra-HD Composite Canvas for Camera Dives ({comp_layout})...")
+        cec.build_composite(
+            layout=comp_layout,
+            width=3840,
+            height=2160,
+            show_info=False,
+            show_labels=False,
+            out_dir=out_dir,
+            output_path=art_comp_png
+        )
+        comp_regenerated = True
+
+    # Read composite metadata for sample endpoints
+    in_start_frame = 0
+    eg_end_frame = -1
+    if os.path.exists(art_comp_json):
+        try:
+            with open(art_comp_json, "r", encoding="utf-8") as f:
+                cm = json.load(f)
+            in_start_frame = int(cm["samples"][0].get("frame_idx", 0))
+            eg_end_frame = int(cm["samples"][-1].get("frame_idx", -1))
+        except Exception as e:
+            print(f"Warning reading composite json: {e}")
+
+    # 3. Trim Ingress Timelapse and Generate Ingress Dive-In Clip
+    tl_in_path = os.path.join(out_dir, "01_timelapse_i10.mp4")
+    art_tl_in_path = os.path.join(out_dir, "art_01_timelapse.mp4")
+    need_tl_in = not os.path.exists(art_tl_in_path) or force_all or comp_regenerated
+    if need_tl_in:
+        print(f"Trimming Ingress Timelapse (starting at sample 0 frame {in_start_frame})...")
+        cap = cv2.VideoCapture(tl_in_path)
+        fourcc = cv2.VideoWriter_fourcc(*'mp4v')
+        vw = cv2.VideoWriter(art_tl_in_path, fourcc, fps, (master_w, master_h))
+        f_idx = 0
+        while True:
+            ret, frame = cap.read()
+            if not ret:
+                break
+            if f_idx >= in_start_frame:
+                vw.write(frame)
+            f_idx += 1
+        cap.release()
+        vw.release()
+
+    dive_in_path = os.path.join(out_dir, "art_01_dive_in.mp4")
+    need_dive_in = not os.path.exists(dive_in_path) or force_all or comp_regenerated or (os.path.exists(art_comp_png) and os.path.getmtime(dive_in_path) < os.path.getmtime(art_comp_png))
+    if need_dive_in:
+        print("Generating Ingress Camera Dive (art_01_dive_in.mp4)...")
+        ref_in = ccd.extract_first_frame(art_tl_in_path)
+        ccd.generate_camera_dive_clip(
+            composite_img_path=art_comp_png,
+            composite_meta_path=art_comp_json,
+            target_sample_idx=0,
+            output_video_path=dive_in_path,
+            direction="zoom_in",
+            hold_duration=2.0,
+            dive_duration=3.0,
+            fps=fps,
+            out_width=master_w,
+            out_height=master_h,
+            target_disk_diameter_px=476.0 * (master_h / 720.0),
+            reference_video_frame=ref_in
+        )
+
+    # 4. Trim Egress Timelapse and Generate Egress Dive-Out Clip
+    tl_eg_path = os.path.join(out_dir, "04_timelapse_i10.mp4")
+    art_tl_eg_path = os.path.join(out_dir, "art_04_timelapse.mp4")
+    need_tl_eg = not os.path.exists(art_tl_eg_path) or force_all or comp_regenerated
+    if need_tl_eg:
+        print(f"Trimming Egress Timelapse (ending at last sample frame {eg_end_frame})...")
+        cap = cv2.VideoCapture(tl_eg_path)
+        fourcc = cv2.VideoWriter_fourcc(*'mp4v')
+        vw = cv2.VideoWriter(art_tl_eg_path, fourcc, fps, (master_w, master_h))
+        f_idx = 0
+        while True:
+            ret, frame = cap.read()
+            if not ret:
+                break
+            if eg_end_frame < 0 or f_idx <= eg_end_frame:
+                vw.write(frame)
+            if eg_end_frame >= 0 and f_idx >= eg_end_frame:
+                break
+            f_idx += 1
+        cap.release()
+        vw.release()
+
+    dive_out_path = os.path.join(out_dir, "art_02_dive_out.mp4")
+    need_dive_out = not os.path.exists(dive_out_path) or force_all or comp_regenerated or (os.path.exists(art_comp_png) and os.path.getmtime(dive_out_path) < os.path.getmtime(art_comp_png))
+    if need_dive_out:
+        print("Generating Egress Camera Dive (art_02_dive_out.mp4)...")
+        ref_out = ccd.extract_last_frame(art_tl_eg_path)
+        ccd.generate_camera_dive_clip(
+            composite_img_path=art_comp_png,
+            composite_meta_path=art_comp_json,
+            target_sample_idx=-1,
+            output_video_path=dive_out_path,
+            direction="zoom_out",
+            hold_duration=2.0,
+            dive_duration=3.0,
+            fps=fps,
+            out_width=master_w,
+            out_height=master_h,
+            target_disk_diameter_px=476.0 * (master_h / 720.0),
+            reference_video_frame=ref_out
+        )
+
+    # 5. Split Real-time Totality Clip at Totality Max (frame 1552)
+    vt_path = os.path.join(out_dir, "03_video_realtime.mp4")
+    tot_p1_path = os.path.join(out_dir, "art_03_totality_p1.mp4")
+    tot_p2_path = os.path.join(out_dir, "art_03_totality_p2.mp4")
+    max_totality_frame = 1552
+
+    if (not os.path.exists(tot_p1_path) or not os.path.exists(tot_p2_path)) or force_all:
+        print("Splitting real-time totality video at Totality Max frame...")
+        cap = cv2.VideoCapture(vt_path)
+        fourcc = cv2.VideoWriter_fourcc(*'mp4v')
+        vw1 = cv2.VideoWriter(tot_p1_path, fourcc, fps, (master_w, master_h))
+        vw2 = cv2.VideoWriter(tot_p2_path, fourcc, fps, (master_w, master_h))
+        f_idx = 0
+        while True:
+            ret, frame = cap.read()
+            if not ret:
+                break
+            if f_idx <= max_totality_frame:
+                vw1.write(frame)
+            if f_idx >= max_totality_frame:
+                vw2.write(frame)
+            f_idx += 1
+        cap.release()
+        vw1.release()
+        vw2.release()
+
+    # 6. Locate Totality HDR Artwork and End Titles
+    tot_hdr_path = os.path.join(out_dir, "05_totality_6.mp4")
+    if not os.path.exists(tot_hdr_path):
+        tot_hdr_path = os.path.join(out_dir, "05_photo_6.mp4")
+
+    slow_path = os.path.join(out_dir, "02_video_slowdown_10.mp4")
+    end_path = os.path.join(out_dir, "07_endtitles.mp4")
+
+    # Ordered Assembly Sequence
+    sequence = []
+    if not no_title and os.path.exists(title_path):
+        sequence.append({"path": title_path, "trans_after": "fade_to_black"})
+
+    sequence.append({"path": dive_in_path, "trans_after": "hard"})
+    sequence.append({"path": art_tl_in_path, "trans_after": "fade_to_black"})
+    sequence.append({"path": slow_path, "trans_after": "fade_to_black"})
+    sequence.append({"path": tot_p1_path, "trans_after": "crossfade", "cross_duration": 0.8})
+    sequence.append({"path": tot_hdr_path, "trans_after": "crossfade", "cross_duration": 0.8})
+    sequence.append({"path": tot_p2_path, "trans_after": "fade_to_black"})
+    sequence.append({"path": art_tl_eg_path, "trans_after": "hard"})
+    sequence.append({"path": dive_out_path, "trans_after": "fade_to_black"})
+
+    if os.path.exists(end_path):
+        sequence.append({"path": end_path, "trans_after": None})
+
+    # Assemble into temp_raw
+    out_parent = os.path.dirname(os.path.abspath(output_path))
+    temp_raw = os.path.join(out_parent, "temp_master_raw_art.mp4")
+
+    ffmpeg_cmd = [
+        'ffmpeg', '-y', '-loglevel', 'error',
+        '-f', 'rawvideo', '-vcodec', 'rawvideo',
+        '-s', f'{master_w}x{master_h}',
+        '-pix_fmt', 'bgr24',
+        '-r', str(fps),
+        '-i', '-',
+        '-c:v', 'libx265',
+        '-crf', str(crf),
+        '-preset', preset,
+        '-tag:v', 'hvc1',
+        '-pix_fmt', 'yuv420p',
+        '-color_range', '1',
+        '-colorspace', 'bt709',
+        '-color_trc', 'bt709',
+        '-color_primaries', 'bt709',
+        temp_raw
+    ]
+    proc_out = subprocess.Popen(ffmpeg_cmd, stdin=subprocess.PIPE, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+
+    total_frames_written = 0
+    prev_last_frame = None
+    prev_trans_after = None
+    prev_cross_dur = 0.8
+
+    n_freeze_b = int(round(freeze_before * fps))
+    n_fade_o = int(round(fade_out * fps))
+    n_black = int(round(black_duration * fps))
+    n_fade_i = int(round(fade_in * fps))
+    n_freeze_a = int(round(freeze_after * fps))
+
+    for item_idx, item in enumerate(sequence):
+        cpath = item['path']
+        trans_type = prev_trans_after
+        cross_dur = prev_cross_dur
+        n_crossfade = int(round(cross_dur * fps))
+
+        print(f"  • Streaming [{item_idx+1}/{len(sequence)}]: {os.path.basename(cpath)}")
+        first_frame_of_clip = None
+        last_frame_of_clip = None
+
+        for frame, w, h in stream_video_frames_pipe(cpath):
+            if w != master_w or h != master_h:
+                frame = cv2.resize(frame, (master_w, master_h), interpolation=cv2.INTER_LANCZOS4)
+
+            if first_frame_of_clip is None:
+                first_frame_of_clip = frame.copy()
+                if prev_last_frame is not None and trans_type is not None:
+                    if trans_type == "fade_to_black":
+                        for _ in range(n_freeze_b):
+                            proc_out.stdin.write(prev_last_frame.tobytes())
+                            total_frames_written += 1
+                        for i in range(1, n_fade_o + 1):
+                            alpha = 1.0 - (i / float(n_fade_o))
+                            faded = np.clip(prev_last_frame.astype(np.float32) * alpha, 0, 255).astype(np.uint8)
+                            proc_out.stdin.write(faded.tobytes())
+                            total_frames_written += 1
+                        if n_black > 0:
+                            black_frame = np.zeros((master_h, master_w, 3), dtype=np.uint8)
+                            for _ in range(n_black):
+                                proc_out.stdin.write(black_frame.tobytes())
+                                total_frames_written += 1
+                        for i in range(1, n_fade_i + 1):
+                            alpha = i / float(n_fade_i)
+                            faded = np.clip(first_frame_of_clip.astype(np.float32) * alpha, 0, 255).astype(np.uint8)
+                            proc_out.stdin.write(faded.tobytes())
+                            total_frames_written += 1
+                        for _ in range(n_freeze_a):
+                            proc_out.stdin.write(first_frame_of_clip.tobytes())
+                            total_frames_written += 1
+
+                    elif trans_type == "crossfade":
+                        for i in range(1, n_crossfade + 1):
+                            alpha = i / float(n_crossfade)
+                            blended = cv2.addWeighted(prev_last_frame, 1.0 - alpha, first_frame_of_clip, alpha, 0.0)
+                            proc_out.stdin.write(blended.tobytes())
+                            total_frames_written += 1
+
+                    elif trans_type == "hard":
+                        pass
+
+            proc_out.stdin.write(frame.tobytes())
+            last_frame_of_clip = frame.copy()
+            total_frames_written += 1
+
+        prev_last_frame = last_frame_of_clip
+        prev_trans_after = item.get('trans_after')
+        prev_cross_dur = item.get('cross_duration', 0.8)
+
+    proc_out.stdin.close()
+    proc_out.wait()
+
+    cmd_fast = ['ffmpeg', '-y', '-loglevel', 'error', '-i', temp_raw, '-c', 'copy', '-movflags', '+faststart', output_path]
+    subprocess.run(cmd_fast, check=True)
+    if os.path.exists(temp_raw):
+        os.remove(temp_raw)
+
+    duration_total_s = total_frames_written / fps
+    sz_mb = os.path.getsize(output_path) / (1024 * 1024)
+    print("=" * 65)
+    print(f"SUCCESS: Art film generated at: {output_path}")
+    print(f"  Resolution: {master_w}x{master_h} @ {fps:.2f} fps")
+    print(f"  Total frames: {total_frames_written} ({duration_total_s:.2f}s)")
+    print(f"  File size: {sz_mb:.2f} MB")
+    print("=" * 65)
+    print("=" * 65 + "\n")
+
+
+# ─────────────────────────────────────────────────────────────────────────────
 # PIPELINE CONTROLLER
 # ─────────────────────────────────────────────────────────────────────────────
 
 def run_coc_pipeline(
     in_dir="010_in",
     out_dir="040_out",
-    output_film="040_out/full_eclipse.mp4",
+    output_film=None,
+    film_style="standard",
     transition_type="fade_to_black",
     freeze_before=1.0,
     fade_out=0.5,
@@ -1124,6 +1460,9 @@ def run_coc_pipeline(
 ):
     os.makedirs(out_dir, exist_ok=True)
 
+    if output_film is None:
+        output_film = os.path.join(out_dir, f"full_eclipse_{film_style}_video.mp4")
+
     # Discover and separate visual assets from audio
     visual_assets, music_asset = discover_coc_assets(in_dir)
     if not visual_assets:
@@ -1135,12 +1474,16 @@ def run_coc_pipeline(
     print("=" * 65)
     print("ECLIPSE ASSEMBLER: CONVENTION-OVER-CONFIGURATION MASTER PIPELINE")
     print("=" * 65)
-    print(f"  Input Directory   : {in_dir}")
-    print(f"  Output Directory  : {out_dir}")
-    print(f"  Master Resolution : {master_w}x{master_h} px")
-    print(f"  Visual Clips      : {len(visual_assets)} discovered")
+    print(f"  Film Assembly Style: {film_style.upper()}")
+    print(f"  Input Directory    : {in_dir}")
+    print(f"  Output Directory   : {out_dir}")
+    print(f"  Clean Video Output : {output_film}")
+    if not no_subtitles:
+        print(f"  Subtitled Master   : {os.path.join(out_dir, f'full_eclipse_{film_style}.mp4')}")
+    print(f"  Master Resolution  : {master_w}x{master_h} px")
+    print(f"  Visual Clips       : {len(visual_assets)} discovered")
     if music_asset is not None and not no_music:
-        print(f"  Music Track       : {music_asset['raw_name']} (Title: '{music_asset['music_title']}', Author: '{music_asset['music_author']}')")
+        print(f"  Music Track        : {music_asset['raw_name']} (Title: '{music_asset['music_title']}', Author: '{music_asset['music_author']}')")
     print("=" * 65)
     print()
 
@@ -1260,25 +1603,47 @@ def run_coc_pipeline(
         processed_clip_paths.append(out_clip_path)
         print()
 
-    # Assemble master film
-    assemble_master_film(
-        clip_paths=processed_clip_paths,
-        output_path=output_film,
-        master_w=master_w,
-        master_h=master_h,
-        transition_type=transition_type,
-        freeze_before=freeze_before,
-        fade_out=fade_out,
-        black_duration=black_duration,
-        fade_in=fade_in,
-        fade_duration=fade_duration,
-        freeze_after=freeze_after,
-        fps=30.0, crf=16, preset="fast"
-    )
+    # 3. Assemble master film based on film_style
+    if film_style.lower() == "art":
+        assemble_art_film(
+            in_dir=in_dir,
+            out_dir=out_dir,
+            output_path=output_film,
+            master_w=master_w,
+            master_h=master_h,
+            visual_assets=visual_assets,
+            no_title=no_title,
+            title_duration=title_duration,
+            freeze_before=freeze_before,
+            fade_out=fade_out,
+            black_duration=black_duration,
+            fade_in=fade_in,
+            fade_duration=fade_duration,
+            freeze_after=freeze_after,
+            fps=30.0, crf=16, preset="fast",
+            music_asset=music_asset,
+            date_str=date_str,
+            force_all=force_all
+        )
+    else:
+        assemble_master_film(
+            clip_paths=processed_clip_paths,
+            output_path=output_film,
+            master_w=master_w,
+            master_h=master_h,
+            transition_type=transition_type,
+            freeze_before=freeze_before,
+            fade_out=fade_out,
+            black_duration=black_duration,
+            fade_in=fade_in,
+            fade_duration=fade_duration,
+            freeze_after=freeze_after,
+            fps=30.0, crf=16, preset="fast"
+        )
 
-    # Invoke standalone subtitle generator
+    # 4. Invoke standalone subtitle generator
     if not no_subtitles:
-        srt_master_path = os.path.splitext(output_film)[0] + ".srt"
+        srt_master_path = os.path.join(out_dir, f"full_eclipse_{film_style}.srt")
         ges.generate_eclipse_subtitles_pipeline(
             video_path=output_film,
             output_srt_path=srt_master_path,
@@ -1291,10 +1656,11 @@ def run_coc_pipeline(
             title_duration=title_duration,
             force_db=force_db,
             in_dir=in_dir,
-            out_dir=out_dir
+            out_dir=out_dir,
+            film_style=film_style
         )
 
-    # 3. Audio / Music Track Synchronization and Muxing
+    # 5. Audio / Music Track Synchronization and Muxing
     if music_asset is not None and not no_music:
         print("=" * 65)
         print(f"INTEGRATING AUDIO TRACK: {music_asset['raw_name']}")
@@ -1304,7 +1670,7 @@ def run_coc_pipeline(
 
         targets_to_mux = []
         if not no_subtitles:
-            subtitled_path = os.path.splitext(output_film)[0] + "_subtitled.mp4"
+            subtitled_path = os.path.join(out_dir, f"full_eclipse_{film_style}.mp4")
             if os.path.exists(subtitled_path):
                 targets_to_mux.append(subtitled_path)
         if os.path.exists(output_film) and output_film not in targets_to_mux:
@@ -1329,12 +1695,14 @@ def run_coc_pipeline(
 
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(description="CoC Automated Solar Eclipse Processing & Master Film Assembly Pipeline")
+    parser.add_argument("--film-style", type=str, choices=["standard", "art"], default="standard",
+                        help="Film assembly style: 'standard' (linear sequence) or 'art' (camera dive & narrative montage). Default: standard")
     parser.add_argument("--in-dir", "-i", type=str, default="010_in",
                         help="Input directory with CoC named assets (default: 010_in)")
     parser.add_argument("--out-dir", type=str, default="040_out",
                         help="Intermediate and master output directory (default: 040_out)")
-    parser.add_argument("--output", "-o", type=str, default="040_out/full_eclipse.mp4",
-                        help="Path to final master film (default: 040_out/full_eclipse.mp4)")
+    parser.add_argument("--output", "-o", type=str, default=None,
+                        help="Path to final master clean video (default: 040_out/full_eclipse_<film_style>_video.mp4)")
     parser.add_argument("--transition-type", type=str, choices=["fade_to_black", "hard", "crossfade"], default="fade_to_black",
                         help="Transition style: 'fade_to_black', 'hard', or 'crossfade'. Default: fade_to_black")
     parser.add_argument("--freeze-before", type=float, default=1.0,
@@ -1371,6 +1739,7 @@ if __name__ == "__main__":
         in_dir=args.in_dir,
         out_dir=args.out_dir,
         output_film=args.output,
+        film_style=args.film_style,
         transition_type=args.transition_type,
         freeze_before=args.freeze_before,
         fade_out=args.fade_out,
@@ -1383,5 +1752,7 @@ if __name__ == "__main__":
         no_title=args.no_title,
         title_duration=args.title_duration,
         force_db=args.force_db,
-        date_str=args.date
+        date_str=args.date,
+        no_music=args.no_music,
+        music_mode=args.music_mode
     )

@@ -145,6 +145,11 @@ def get_composite_time_range(out_dir: str = "040_out", date_str: str = None) -> 
     """
     # 1. Check if metadata JSON exists
     candidates = [
+        os.path.join(out_dir, "06_composite_circle_4k_10.json"),
+        os.path.join(out_dir, "art_composite_4k_circle.json"),
+        os.path.join(out_dir, "art_composite_4k_arc.json"),
+        os.path.join(out_dir, "composite_artwork_06_circle.json"),
+        os.path.join(out_dir, "composite_artwork_06_arc.json"),
         os.path.join(out_dir, "06_composite_arc_10.json"),
         os.path.join(out_dir, "06_composite_sinusoid_10.json"),
         os.path.join(out_dir, "composite_samples.json"),
@@ -153,6 +158,8 @@ def get_composite_time_range(out_dir: str = "040_out", date_str: str = None) -> 
         os.path.join(out_dir, "eclipse_composite_arc_3840x2160.json"),
         os.path.join(out_dir, "eclipse_composite_sinusoid_3840p.json")
     ]
+    import glob
+    candidates.extend(glob.glob(os.path.join(out_dir, "*composite*.json")))
     for c in candidates:
         if os.path.exists(c):
             try:
@@ -181,12 +188,14 @@ def build_timeline_mapping(
     fade_out: float = 0.5,
     black_duration: float = 0.0,
     fade_in: float = 0.5,
-    freeze_after: float = 1.0
+    freeze_after: float = 1.0,
+    film_style: str = "standard"
 ):
     """
     Builds a timeline model mapping every millisecond of the assembled film
     to its astronomical local time and phase description.
     All timestamps come directly from 000_raw/ telescope footage.
+    Supports film_style="standard" (linear) and film_style="art" (narrative zoom dive).
     """
     resolved_date = date_str or eedb.detect_eclipse_date(raw_dir="000_raw", in_dir=in_dir)
     dt_base = datetime.datetime.strptime(resolved_date, "%Y-%m-%d")
@@ -200,6 +209,323 @@ def build_timeline_mapping(
     dt_egress_start   = datetime.datetime(dt_base.year, dt_base.month, dt_base.day, 20, 32, 53)
 
     trans_dur = freeze_before + fade_out + black_duration + fade_in + freeze_after
+
+    if film_style == "art":
+        segments = []
+        current_time = 0.0
+
+        # 1. Title card
+        p_title = os.path.join(out_dir, "00_title.mp4")
+        if include_title:
+            t_dur = title_duration
+            if os.path.exists(p_title):
+                t_dur = get_video_info(p_title)['duration']
+            segments.append({
+                "type": "title_card",
+                "filename": "00_title.mp4",
+                "start": current_time,
+                "end": current_time + t_dur,
+                "duration": t_dur,
+                "speed_factor": None,
+                "c2_time": None,
+                "c3_time": None,
+                "dt_start": dt_ingress_start,
+                "dt_end": dt_ingress_start
+            })
+            current_time += t_dur
+            # Transition after title card (fade_to_black)
+            trans_start = current_time
+            trans_end = current_time + trans_dur
+            segments.append({
+                "type": "transition",
+                "filename": "transition_title",
+                "start": trans_start,
+                "end": trans_end,
+                "prev_type": "title_card",
+                "speed_factor": 1.0,
+                "dt_start": dt_ingress_start,
+                "dt_end": dt_ingress_start
+            })
+            current_time = trans_end
+
+        # 2. Art Dive In
+        p_dive_in = os.path.join(out_dir, "art_01_dive_in.mp4")
+        dive_in_dur = 5.0
+        if os.path.exists(p_dive_in):
+            dive_in_dur = get_video_info(p_dive_in)['duration']
+        segments.append({
+            "type": "art_dive_in",
+            "filename": "art_01_dive_in.mp4",
+            "start": current_time,
+            "end": current_time + dive_in_dur,
+            "duration": dive_in_dur,
+            "speed_factor": None,
+            "c2_time": None,
+            "c3_time": None,
+            "dt_start": dt_ingress_start,
+            "dt_end": dt_egress_start + datetime.timedelta(seconds=246 * 10.0)
+        })
+        current_time += dive_in_dur
+
+        # Read composite metadata for sample endpoints if available
+        art_comp_json = None
+        for cand in [
+            os.path.join(out_dir, "art_composite_4k_circle.json"),
+            os.path.join(out_dir, "art_composite_4k_arc.json"),
+            os.path.join(out_dir, "06_composite_circle_4k_10.json"),
+            os.path.join(out_dir, "composite_artwork_06_circle.json"),
+            os.path.join(out_dir, "composite_samples.json")
+        ]:
+            if os.path.exists(cand):
+                art_comp_json = cand
+                break
+        if not art_comp_json:
+            import glob
+            cands = glob.glob(os.path.join(out_dir, "*composite*.json"))
+            if cands:
+                art_comp_json = cands[0]
+
+        in_start_frame = 0
+        eg_end_frame = 245
+        if art_comp_json and os.path.exists(art_comp_json):
+            try:
+                with open(art_comp_json, "r", encoding="utf-8") as f:
+                    cm = json.load(f)
+                in_start_frame = int(cm["samples"][0].get("frame_idx", 0))
+                eg_end_frame = int(cm["samples"][-1].get("frame_idx", 245))
+            except Exception:
+                pass
+
+        # 3. Timelapse Ingress (art_01_timelapse.mp4 or 01_timelapse_i10.mp4)
+        p_art_tl_in = os.path.join(out_dir, "art_01_timelapse.mp4")
+        p_tl_in = p_art_tl_in if os.path.exists(p_art_tl_in) else os.path.join(out_dir, "01_timelapse_i10.mp4")
+        tl_in_dur = 8.9
+        if os.path.exists(p_tl_in):
+            tl_in_dur = get_video_info(p_tl_in)['duration']
+        
+        dt_in_actual_start = dt_ingress_start + datetime.timedelta(seconds=in_start_frame * 10.0)
+        tl_in_span_s = max(1.0, (267 - in_start_frame) * 10.0)
+        dt_in_actual_end = dt_ingress_start + datetime.timedelta(seconds=267 * 10.0)
+
+        segments.append({
+            "type": "timelapse_ingress",
+            "filename": os.path.basename(p_tl_in),
+            "start": current_time,
+            "end": current_time + tl_in_dur,
+            "duration": tl_in_dur,
+            "speed_factor": tl_in_span_s / max(tl_in_dur, 0.1),
+            "c2_time": None,
+            "c3_time": None,
+            "dt_start": dt_in_actual_start,
+            "dt_end": dt_in_actual_end
+        })
+        current_time += tl_in_dur
+
+        # Transition after timelapse ingress (fade_to_black)
+        trans_start = current_time
+        trans_end = current_time + trans_dur
+        segments.append({
+            "type": "transition",
+            "filename": "transition_tl_in",
+            "start": trans_start,
+            "end": trans_end,
+            "prev_type": "timelapse_ingress",
+            "speed_factor": tl_in_span_s / max(tl_in_dur, 0.1),
+            "dt_start": dt_in_actual_end,
+            "dt_end": dt_in_actual_end
+        })
+        current_time = trans_end
+
+        # 4. Video Slowdown (02_video_slowdown_10.mp4)
+        p_slow = os.path.join(out_dir, "02_video_slowdown_10.mp4")
+        slow_dur = 10.0
+        if os.path.exists(p_slow):
+            slow_dur = get_video_info(p_slow)['duration']
+        slow_real_span = (dt_pre_tot_end - dt_pre_tot_start).total_seconds()
+        segments.append({
+            "type": "video_slowdown",
+            "filename": "02_video_slowdown_10.mp4",
+            "start": current_time,
+            "end": current_time + slow_dur,
+            "duration": slow_dur,
+            "speed_factor": slow_real_span / max(slow_dur, 0.1),
+            "c2_time": None,
+            "c3_time": None,
+            "dt_start": dt_pre_tot_start,
+            "dt_end": dt_pre_tot_end
+        })
+        current_time += slow_dur
+
+        # Transition after slowdown (fade_to_black)
+        trans_start = current_time
+        trans_end = current_time + trans_dur
+        segments.append({
+            "type": "transition",
+            "filename": "transition_slow",
+            "start": trans_start,
+            "end": trans_end,
+            "prev_type": "video_slowdown",
+            "speed_factor": slow_real_span / max(slow_dur, 0.1),
+            "dt_start": dt_pre_tot_end,
+            "dt_end": dt_pre_tot_end
+        })
+        current_time = trans_end
+
+        # 5. Video Realtime Part 1 (art_03_totality_p1.mp4)
+        p_tot_p1 = os.path.join(out_dir, "art_03_totality_p1.mp4")
+        tot_p1_dur = 51.767
+        if os.path.exists(p_tot_p1):
+            tot_p1_dur = get_video_info(p_tot_p1)['duration']
+        dt_tot_max = dt_totality_start + datetime.timedelta(seconds=51.767)
+        c2_global = current_time + 3.47
+        segments.append({
+            "type": "video_realtime_p1",
+            "filename": "art_03_totality_p1.mp4",
+            "start": current_time,
+            "end": current_time + tot_p1_dur,
+            "duration": tot_p1_dur,
+            "speed_factor": 1.0,
+            "c2_time": c2_global,
+            "c3_time": None,
+            "dt_start": dt_totality_start,
+            "dt_end": dt_tot_max
+        })
+        current_time += tot_p1_dur
+
+        # 6. Totality HDR Artwork (05_totality_6.mp4) - crossfaded into at Totality Max!
+        p_tot_art = os.path.join(out_dir, "05_totality_6.mp4")
+        if not os.path.exists(p_tot_art):
+            p_tot_art = os.path.join(out_dir, "05_photo_6.mp4")
+        tot_art_dur = 6.0
+        if os.path.exists(p_tot_art):
+            tot_art_dur = get_video_info(p_tot_art)['duration']
+        segments.append({
+            "type": "totality_artwork",
+            "filename": os.path.basename(p_tot_art),
+            "start": current_time,
+            "end": current_time + tot_art_dur,
+            "duration": tot_art_dur,
+            "speed_factor": None,
+            "c2_time": None,
+            "c3_time": None,
+            "dt_start": dt_totality_start,
+            "dt_end": dt_totality_end
+        })
+        current_time += tot_art_dur
+
+        # 7. Video Realtime Part 2 (art_03_totality_p2.mp4) - crossfaded from Totality HDR!
+        p_tot_p2 = os.path.join(out_dir, "art_03_totality_p2.mp4")
+        tot_p2_dur = 55.600
+        if os.path.exists(p_tot_p2):
+            tot_p2_dur = get_video_info(p_tot_p2)['duration']
+        c3_global = current_time + 48.8
+        segments.append({
+            "type": "video_realtime_p2",
+            "filename": "art_03_totality_p2.mp4",
+            "start": current_time,
+            "end": current_time + tot_p2_dur,
+            "duration": tot_p2_dur,
+            "speed_factor": 1.0,
+            "c2_time": None,
+            "c3_time": c3_global,
+            "dt_start": dt_tot_max,
+            "dt_end": dt_totality_end
+        })
+        current_time += tot_p2_dur
+
+        # Transition after totality (fade_to_black)
+        trans_start = current_time
+        trans_end = current_time + trans_dur
+        segments.append({
+            "type": "transition",
+            "filename": "transition_tot_egress",
+            "start": trans_start,
+            "end": trans_end,
+            "prev_type": "video_realtime",
+            "speed_factor": 1.0,
+            "dt_start": dt_totality_end,
+            "dt_end": dt_totality_end
+        })
+        current_time = trans_end
+
+        # 8. Timelapse Egress (art_04_timelapse.mp4 or 04_timelapse_i10.mp4)
+        p_art_tl_eg = os.path.join(out_dir, "art_04_timelapse.mp4")
+        p_tl_eg = p_art_tl_eg if os.path.exists(p_art_tl_eg) else os.path.join(out_dir, "04_timelapse_i10.mp4")
+        tl_eg_dur = 8.2
+        if os.path.exists(p_tl_eg):
+            tl_eg_dur = get_video_info(p_tl_eg)['duration']
+        tl_eg_span_s = max(1.0, (eg_end_frame + 1) * 10.0)
+        dt_eg_actual_start = dt_egress_start
+        dt_eg_actual_end = dt_egress_start + datetime.timedelta(seconds=tl_eg_span_s)
+
+        segments.append({
+            "type": "timelapse_egress",
+            "filename": os.path.basename(p_tl_eg),
+            "start": current_time,
+            "end": current_time + tl_eg_dur,
+            "duration": tl_eg_dur,
+            "speed_factor": tl_eg_span_s / max(tl_eg_dur, 0.1),
+            "c2_time": None,
+            "c3_time": None,
+            "dt_start": dt_eg_actual_start,
+            "dt_end": dt_eg_actual_end
+        })
+        current_time += tl_eg_dur
+
+        # 9. Art Dive Out (art_02_dive_out.mp4)
+        p_dive_out = os.path.join(out_dir, "art_02_dive_out.mp4")
+        dive_out_dur = 5.0
+        if os.path.exists(p_dive_out):
+            dive_out_dur = get_video_info(p_dive_out)['duration']
+        segments.append({
+            "type": "art_dive_out",
+            "filename": "art_02_dive_out.mp4",
+            "start": current_time,
+            "end": current_time + dive_out_dur,
+            "duration": dive_out_dur,
+            "speed_factor": None,
+            "c2_time": None,
+            "c3_time": None,
+            "dt_start": dt_ingress_start,
+            "dt_end": dt_egress_start + datetime.timedelta(seconds=246 * 10.0)
+        })
+        current_time += dive_out_dur
+
+        # Transition after dive out (fade_to_black)
+        trans_start = current_time
+        trans_end = current_time + trans_dur
+        segments.append({
+            "type": "transition",
+            "filename": "transition_dive_out",
+            "start": trans_start,
+            "end": trans_end,
+            "prev_type": "composite",
+            "speed_factor": 1.0,
+            "dt_start": dt_egress_start,
+            "dt_end": dt_egress_start
+        })
+        current_time = trans_end
+
+        # 10. End Titles (07_endtitles.mp4)
+        p_end = os.path.join(out_dir, "07_endtitles.mp4")
+        end_dur = 6.0
+        if os.path.exists(p_end):
+            end_dur = get_video_info(p_end)['duration']
+        segments.append({
+            "type": "endtitles",
+            "filename": "07_endtitles.mp4",
+            "start": current_time,
+            "end": current_time + end_dur,
+            "duration": end_dur,
+            "speed_factor": None,
+            "c2_time": None,
+            "c3_time": None,
+            "dt_start": dt_egress_start,
+            "dt_end": dt_egress_start
+        })
+        current_time += end_dur
+
+        return segments, current_time
 
     # 1. Discover all assets dynamically in 010_in/
     discovered = []
@@ -452,6 +778,18 @@ def get_astronomical_state_at(t: float, segments: list, c2_point: float, c3_poin
             if stype in ["title_card", "endtitles"]:
                 return None, None
 
+            elif stype == "art_dive_in":
+                comp_range = get_composite_time_range(out_dir=out_dir, date_str=date_str)
+                clock_str = comp_range
+                phase_str = "Mosaico Secuencia del Eclipse (Zoom de Ingreso)" if is_es else "Eclipse Sequence Mosaic (Ingress Dive)"
+                return clock_str, phase_str
+
+            elif stype == "art_dive_out":
+                comp_range = get_composite_time_range(out_dir=out_dir, date_str=date_str)
+                clock_str = comp_range
+                phase_str = "Mosaico Secuencia del Eclipse (Zoom de Salida)" if is_es else "Eclipse Sequence Mosaic (Egress Zoom-Out)"
+                return clock_str, phase_str
+
             elif stype == "timelapse_ingress":
                 real_seconds = frac * (seg['dt_end'] - seg['dt_start']).total_seconds()
                 clock_str = format_clock_time(seg['dt_start'], real_seconds)
@@ -487,6 +825,35 @@ def get_astronomical_state_at(t: float, segments: list, c2_point: float, c3_poin
                     phase_str = f"Totalidad ({speed_str})" if is_es else f"Totality ({speed_str})"
                 return clock_str, phase_str
 
+            elif stype in ["video_realtime_p1", "video_realtime_p2"]:
+                real_seconds = frac * (seg['dt_end'] - seg['dt_start']).total_seconds()
+                clock_str = format_clock_time(seg['dt_start'], real_seconds)
+
+                if stype == "video_realtime_p1":
+                    if c2_point and t < c2_point - 0.2:
+                        phase_str = f"C1->C2: Anillo de Diamantes ({speed_str})" if is_es else f"C1->C2: Diamond Ring ({speed_str})"
+                    elif c2_point and c2_point - 0.2 <= t <= c2_point + 1.8:
+                        c2_rel_sec = max(0.0, c2_point - seg['start'])
+                        clock_str = format_clock_time(seg['dt_start'], c2_rel_sec)
+                        phase_str = "C2: Segundo Contacto (Inicio Totalidad)" if is_es else "C2: Second Contact (Totality Start)"
+                    elif rel_t >= seg['duration'] - 2.5:
+                        phase_str = "Totalidad (Aproximación al Máximo)" if is_es else "Totality (Approaching Maximum)"
+                    else:
+                        phase_str = f"Totalidad ({speed_str})" if is_es else f"Totality ({speed_str})"
+                else:  # video_realtime_p2
+                    if c3_point and c3_point - 1.8 <= t <= c3_point + 1.0:
+                        c3_rel_sec = max(0.0, c3_point - seg['start'])
+                        clock_str = format_clock_time(seg['dt_start'], c3_rel_sec)
+                        phase_str = "C3: Tercer Contacto (Fin Totalidad)" if is_es else "C3: Third Contact (Totality End)"
+                    elif c3_point and t > c3_point + 1.0:
+                        phase_str = f"C3->C4: Anillo de Diamantes ({speed_str})" if is_es else f"C3->C4: Diamond Ring ({speed_str})"
+                    elif rel_t <= 2.5:
+                        phase_str = "Totalidad (Post-Máximo)" if is_es else "Totality (Post-Maximum)"
+                    else:
+                        phase_str = f"Totalidad ({speed_str})" if is_es else f"Totality ({speed_str})"
+
+                return clock_str, phase_str
+
             elif stype == "timelapse_egress":
                 real_seconds = frac * (seg['dt_end'] - seg['dt_start']).total_seconds()
                 clock_str = format_clock_time(seg['dt_start'], real_seconds)
@@ -511,7 +878,7 @@ def get_astronomical_state_at(t: float, segments: list, c2_point: float, c3_poin
 
             elif stype == "transition":
                 p_type = seg.get('prev_type')
-                if p_type in ["title_card", "composite", "endtitles"]:
+                if p_type in ["title_card", "composite", "endtitles", "art_dive_in", "art_dive_out"]:
                     return None, None
                 clock_str = seg['dt_start'].strftime("%H:%M:%S")
                 if p_type == "timelapse_ingress":
@@ -704,11 +1071,12 @@ def generate_youtube_metadata(
     c3_time: float,
     out_dir: str = "040_out",
     eph: dict = None,
-    timezone: str = "CEST"
+    timezone: str = "CEST",
+    film_style: str = "standard"
 ):
     """
     Generates YouTube-compliant chapters (0:00 starting format) and full video description
-    exported to 040_out/youtube_chapters.txt and 040_out/youtube_description.txt.
+    exported to 040_out/youtube_chapters_<type>.txt and 040_out/youtube_description_<type>.txt.
     """
     chapters_bilingual = []
     chapters_es = []
@@ -729,6 +1097,14 @@ def generate_youtube_metadata(
             chapters_bilingual.append((st, t_str, "Presentación / Eclipse Overview"))
             chapters_es.append((st, t_str, "Presentación del Eclipse"))
             chapters_en.append((st, t_str, "Eclipse Overview & Ephemeris"))
+        elif stype == "art_dive_in":
+            chapters_bilingual.append((st, t_str, "Mosaico Secuencia (Zoom de Ingreso) / Sequence Mosaic (Ingress Dive)"))
+            chapters_es.append((st, t_str, "Mosaico Secuencia (Zoom de Ingreso)"))
+            chapters_en.append((st, t_str, "Sequence Mosaic (Ingress Camera Dive)"))
+        elif stype == "art_dive_out":
+            chapters_bilingual.append((st, t_str, "Mosaico Secuencia (Zoom de Salida) / Sequence Mosaic (Egress Dive)"))
+            chapters_es.append((st, t_str, "Mosaico Secuencia (Zoom de Salida)"))
+            chapters_en.append((st, t_str, "Sequence Mosaic (Egress Zoom-Out)"))
         elif stype == "timelapse_ingress":
             chapters_bilingual.append((st, t_str, "Ingreso Parcial / Partial Ingress (Timelapse)"))
             chapters_es.append((st, t_str, "Ingreso Parcial (Timelapse)"))
@@ -755,6 +1131,18 @@ def generate_youtube_metadata(
             chapters_bilingual.append((c3_val, c3_str, "C3: Tercer Contacto / C3: Third Contact"))
             chapters_es.append((c3_val, c3_str, "C3: Tercer Contacto (Fin de la Totalidad)"))
             chapters_en.append((c3_val, c3_str, "C3: Third Contact (Totality End)"))
+        elif stype == "video_realtime_p1":
+            c2_val = s.get("c2_time", c2_time or (st + 3.47))
+            c2_str = fmt_time(c2_val)
+            chapters_bilingual.append((c2_val, c2_str, "C2: Inicio de la Totalidad / C2: Totality Start (Real-Time)"))
+            chapters_es.append((c2_val, c2_str, "C2: Segundo Contacto (Inicio Totalidad Tiempo Real)"))
+            chapters_en.append((c2_val, c2_str, "C2: Second Contact (Totality Start Real-Time)"))
+        elif stype == "video_realtime_p2":
+            c3_val = s.get("c3_time", c3_time or (st + 48.8))
+            c3_str = fmt_time(c3_val)
+            chapters_bilingual.append((c3_val, c3_str, "C3: Fin de la Totalidad / C3: Totality End (Real-Time)"))
+            chapters_es.append((c3_val, c3_str, "C3: Tercer Contacto (Fin Totalidad Tiempo Real)"))
+            chapters_en.append((c3_val, c3_str, "C3: Third Contact (Totality End Real-Time)"))
         elif stype == "timelapse_egress":
             chapters_bilingual.append((st, t_str, "Egreso Parcial / Partial Egress (Timelapse)"))
             chapters_es.append((st, t_str, "Egreso Parcial (Timelapse)"))
@@ -787,7 +1175,7 @@ def generate_youtube_metadata(
         chapters_es.insert(0, (0.0, "0:00", "Presentación del Eclipse"))
         chapters_en.insert(0, (0.0, "0:00", "Eclipse Overview & Ephemeris"))
 
-    # Text content for youtube_chapters.txt
+    # Text content for youtube_chapters_<type>.txt
     lines = []
     lines.append("Capítulos / Chapters:")
     for _, t, name in chapters_bilingual:
@@ -801,7 +1189,7 @@ def generate_youtube_metadata(
     for _, t, name in chapters_en:
         lines.append(f"{t} - {name}")
 
-    chap_path = os.path.join(out_dir, "youtube_chapters.txt")
+    chap_path = os.path.join(out_dir, f"youtube_chapters_{film_style}.txt")
     with open(chap_path, "w", encoding="utf-8") as f:
         f.write("\n".join(lines) + "\n")
 
@@ -827,7 +1215,7 @@ def generate_youtube_metadata(
     for _, t, name in chapters_bilingual:
         desc_lines.append(f"{t} - {name}")
 
-    desc_path = os.path.join(out_dir, "youtube_description.txt")
+    desc_path = os.path.join(out_dir, f"youtube_description_{film_style}.txt")
     with open(desc_path, "w", encoding="utf-8") as f:
         desc_write = "\n".join(desc_lines) + "\n"
         f.write(desc_write)
@@ -836,8 +1224,8 @@ def generate_youtube_metadata(
 
 
 def generate_eclipse_subtitles_pipeline(
-    video_path: str = "040_out/full_eclipse.mp4",
-    output_srt_path: str = "040_out/full_eclipse.srt",
+    video_path: str = None,
+    output_srt_path: str = None,
     interval_s: float = 5.0,
     include_phase: bool = True,
     lang: str = "both",
@@ -851,15 +1239,22 @@ def generate_eclipse_subtitles_pipeline(
     title_duration: float = 5.0,
     force_db: bool = False,
     in_dir: str = "010_in",
-    out_dir: str = "040_out"
+    out_dir: str = "040_out",
+    film_style: str = "standard"
 ):
     """
     Main entry point to generate localized astronomical subtitles (EN and ES)
     purely from ground-truth raw telescope recordings.
     """
+    if video_path is None:
+        video_path = os.path.join(out_dir, f"full_eclipse_{film_style}_video.mp4")
+    if output_srt_path is None:
+        output_srt_path = os.path.join(out_dir, f"full_eclipse_{film_style}.srt")
+
     print("=================================================================")
     print("ASTRONOMICAL ECLIPSE MULTILINGUAL SUBTITLE GENERATOR (.SRT)")
     print("=================================================================")
+    print(f"  Film Style     : {film_style.upper()}")
     print(f"  Master Video   : {video_path}")
     print(f"  Output SRT     : {output_srt_path}")
     print(f"  Languages      : {lang.upper()} (English + Spanish)")
@@ -902,18 +1297,18 @@ def generate_eclipse_subtitles_pipeline(
         out_dir=out_dir,
         date_str=eph["date"],
         include_title=has_title,
-        title_duration=title_duration
+        title_duration=title_duration,
+        film_style=film_style
     )
 
     # Locate C2 and C3 optical contact points in film timeline
     c2_time = 36.153
     c3_time = 133.112
     for seg in segments:
-        if seg['type'] == "video_realtime":
-            if seg.get('c2_time'):
-                c2_time = seg['c2_time']
-            if seg.get('c3_time'):
-                c3_time = seg['c3_time']
+        if seg.get('c2_time'):
+            c2_time = seg['c2_time']
+        if seg.get('c3_time'):
+            c3_time = seg['c3_time']
 
     print(f"  • Optical Contact Points in Film:")
     print(f"    - C2 (Totality Start) : {c2_time:.2f}s ({format_srt_time(c2_time)}) -> 20:27:35 {timezone}")
@@ -965,7 +1360,8 @@ def generate_eclipse_subtitles_pipeline(
         c3_time=c3_time,
         out_dir=out_dir,
         eph=eph,
-        timezone=timezone
+        timezone=timezone,
+        film_style=film_style
     )
     print("\n-----------------------------------------------------------------")
     print("YOUTUBE CHAPTERS & DESCRIPTION EXPORTED:")
@@ -976,13 +1372,19 @@ def generate_eclipse_subtitles_pipeline(
         print(f"  {t} - {name}")
 
     # Export FFmpeg chapter metadata for native MP4 / QuickTime embedding
-    meta_chap_p = os.path.join(out_dir, "metadata_chapters.txt")
+    meta_chap_p = os.path.join(out_dir, f"metadata_chapters_{film_style}.txt")
     export_ffmetadata_chapters(yt_chaps, total_film_dur, meta_chap_p)
 
     # Optional QuickTime MP4 embedding (Subtitles + Native Chapters)
     if embed and os.path.exists(path_es) and os.path.exists(path_en):
-        v_base, v_ext = os.path.splitext(video_path)
-        subtitled_video_path = f"{v_base}_subtitled{v_ext}"
+        if video_path.endswith("_video.mp4"):
+            subtitled_video_path = video_path[:-10] + ".mp4"
+        elif video_path.endswith("_subtitled.mp4"):
+            subtitled_video_path = video_path
+        else:
+            v_base, v_ext = os.path.splitext(video_path)
+            subtitled_video_path = f"{v_base}_subtitled{v_ext}"
+
         embed_subtitles_for_quicktime(
             video_path=video_path,
             srt_es=path_es,
@@ -999,10 +1401,10 @@ def main():
     parser = argparse.ArgumentParser(
         description="Astronomical Local Time Subtitle Generator for Solar & Lunar Eclipse Videos"
     )
-    parser.add_argument("--video", "-v", type=str, default="040_out/full_eclipse.mp4",
-                        help="Path to master video file (default: 040_out/full_eclipse.mp4)")
-    parser.add_argument("--output", "-o", type=str, default="040_out/full_eclipse.srt",
-                        help="Path to output subtitle file (default: 040_out/full_eclipse.srt)")
+    parser.add_argument("--video", "-v", type=str, default=None,
+                        help="Path to master video file (default: 040_out/full_eclipse_<film_style>_video.mp4)")
+    parser.add_argument("--output", "-o", type=str, default=None,
+                        help="Path to output subtitle file (default: 040_out/full_eclipse_<film_style>.srt)")
     parser.add_argument("--lang", "-l", type=str, default="both",
                         help="Language: 'both' (default, generates EN and ES), 'en' (English), or 'es' (Spanish)")
     parser.add_argument("--embed", action="store_true",
@@ -1029,6 +1431,8 @@ def main():
                         help="Path to input clips directory (default: 010_in)")
     parser.add_argument("--out-dir", type=str, default="040_out",
                         help="Path to output directory (default: 040_out)")
+    parser.add_argument("--film-style", type=str, choices=["standard", "art"], default="standard",
+                        help="Film assembly style: 'standard' or 'art' (default: standard)")
 
     args = parser.parse_args()
 
@@ -1047,7 +1451,8 @@ def main():
         include_title=not args.no_title,
         force_db=args.force_db,
         in_dir=args.in_dir,
-        out_dir=args.out_dir
+        out_dir=args.out_dir,
+        film_style=args.film_style
     )
 
 
