@@ -4,15 +4,15 @@ An automated, high-precision computer vision and astronomical pipeline designed 
 
 ---
 
-## 🔭 Source Telemetry & Raw Footage (`000_raw/`)
+## 🔭 Source Telemetry & Raw Footage (`000_raw/<observation>/`)
 
 Smart telescopes (such as **DWARFLAB DWARF mini / DWARF II / DWARF 3**, **ZWO Seestar S50**, **Vaonis Vespera**, or intervalometer-controlled DSLRs) embed the exact real-world capture timestamps directly into the raw video filenames and file metadata headers.
 
-Users should place their **original, unedited raw telescope captures** inside the **`000_raw/`** directory. This directory serves as the **ground-truth telemetry source** for all astronomical timestamps, contact point calculations, speed multiplier derivations, and automatic eclipse date detection across the pipeline.
+The pipeline organizes raw data into **observation folders** inside `000_raw/<observation>/` (e.g. `000_raw/solar26/`). Each observation directory represents a distinct observation campaign or observing location, serving as the **ground-truth telemetry source** for all astronomical timestamps, contact point calculations, speed multiplier derivations, and automatic eclipse date detection across the pipeline.
 
-### Example Files in `000_raw/` (DWARFLAB DWARF mini):
+### Example Files in `000_raw/solar26/` (DWARFLAB DWARF mini):
 
-| Raw File in `000_raw/`                               | Capture Mode           | Embedded Timestamp                        | Purpose & Telemetry in Pipeline                                                                                                                                                                                                               |
+| Raw File in `000_raw/solar26/`                       | Capture Mode           | Embedded Timestamp                        | Purpose & Telemetry in Pipeline                                                                                                                                                                                                               |
 | :--------------------------------------------------- | :--------------------- | :---------------------------------------- | :-------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
 | **`DWARF_mini_TELE_TL_2026-08-12-19-35-13-093.mp4`** | Ingress Timelapse      | `19:35:13 CEST`                           | Baseline start timestamp ($t_0$) for partial ingress progression (1 frame every 10s).                                                                                                                                                         |
 | **`DWARF_mini_TELE_2026-08-12-20-20-36-811.mp4`**    | Real-Time Video Burst  | `20:20:36 CEST`                           | High-speed video encompassing pre-totality thin crescent, C2 diamond ring, totality corona, and C3 egress diamond ring.                                                                                                                       |
@@ -20,8 +20,8 @@ Users should place their **original, unedited raw telescope captures** inside th
 | **`gps.jpg`**                                        | Observer GPS Reference | `43.235556°N, 7.558333°W` (Alt: `438.7m`) | Any photograph taken with the telescope (or smartphone) from the exact observing site containing embedded EXIF GPS tags (Latitude, Longitude, Altitude), used as the location ground truth to calculate topocentric NASA Besselian ephemeris. |
 
 > [!IMPORTANT]
-> **Why keep `000_raw/` separate from `010_in/`?**
-> Video editing or trimming software often strips original capture creation timestamps and EXIF GPS tags. By keeping original files in `000_raw/` (including any reference photo like `gps.jpg`), the subtitle generator (`020_src/generate_eclipse_subtitles.py`) and composite generator (`020_src/create_eclipse_composite.py`) reference authentic ground-truth timestamps and exact geographic coordinates, computing frame-accurate astronomical local times directly from the lens.
+> **Why keep `000_raw/<observation>/` separate from `010_in/`?**
+> Video editing or trimming software often strips original capture creation timestamps and EXIF GPS tags. By keeping original files in `000_raw/<observation>/` (including any reference photo like `gps.jpg`), the subtitle generator (`020_src/generate_eclipse_subtitles.py`) and composite generator (`020_src/create_eclipse_composite.py`) reference authentic ground-truth timestamps and exact geographic coordinates, computing frame-accurate astronomical local times directly from the lens.
 
 ---
 
@@ -100,91 +100,142 @@ Before the first timelapse clip, `build_full_eclipse.py` automatically generates
 
 ---
 
-## 🌒 Overview & CoC Architecture (`010_in/`)
+## 🌒 Multi-Project Architecture & CoC (`010_in/`)
 
-This pipeline follows **Convention over Configuration (CoC)**. Curated assets in **`010_in/`** define sequence ordering, asset types, timelapse shoot intervals, custom durations, and processing pipelines without needing external configuration files:
+The pipeline supports a robust **Multi-Project Architecture** based on **Convention over Configuration (CoC)**. Multiple projects can coexist inside `010_in/` as independent subdirectories, mapping seamlessly to their corresponding observation raw data in `000_raw/<observation>/` and outputting cleanly into `040_out/<project_folder>/`.
+
+### 1. Project Folder Naming Nomenclature
+
+Each project directory in `010_in/` follows the convention:
+
+```
+010_in/<observation>_<project_name>_<layout>[_<preproc>]/
+```
+
+- **`<observation>`**: Identifies the observation campaign / telescope telemetry dataset inside `000_raw/<observation>/` (e.g. `solar26`).
+- **`<project_name>`**: Sub-identifier or variant (e.g. `main`, `v1`, `v2`).
+- **`project_id`**: The canonical base project ID derived as `<observation>_<project_name>` (e.g. `solar26_main`, `solar26_v1`, `solar26_v2`). This ID names all primary output files (`.mp4`, `_chapters.txt`, `_en.srt`, `_es.srt`).
+- **`<layout>`**: Film assembly style:
+  - **`standard`**: Linear chronological sequence with smooth fades to black.
+  - **`art`**: Cinematic narrative assembly featuring 4K continuous sub-pixel camera dives, crossfades at Totality Max, and dynamic mosaics.
+- **`[_preproc]`**: Optional flag indicating that the project consumes obstacle-free, centered, and C1/C4-extrapolated timelapses from `005_raw_preprocessed/<observation>/` (automatically generated on first run if missing).
+
+#### Real-World Project Examples:
+
+| Project Folder in `010_in/`             | Base ID (`project_id`) | Observation Source            | Film Style | Preprocessing | Description                                                                                    |
+| :-------------------------------------- | :--------------------- | :---------------------------- | :--------- | :------------ | :--------------------------------------------------------------------------------------------- |
+| **`solar26_main_standard_preproc`**     | `solar26_main`         | `000_raw/solar26/` (via 005)  | `standard` | ✅ Enabled     | Main official solar eclipse film in standard linear format using preprocessed restored footage. |
+| **`solar26_v1_standard`**               | `solar26_v1`           | `000_raw/solar26/` (original) | `standard` | ❌ Raw assets | Linear sequence using raw telescope recordings and high-speed pre-totality slowdown burst.      |
+| **`solar26_v2_art_preproc`**            | `solar26_v2`           | `000_raw/solar26/` (via 005)  | `art`      | ✅ Enabled     | Cinematic Art film with 4K camera dives, Totality HDR insert, and preprocessed timelapses.      |
+
+---
+
+### 2. Supported CoC Asset Types inside `010_in/<project>/`
 
 `[INDEX]_[TYPE]_[PARAMS/INTERVAL/LAYOUT]_[DURATION].[ext]`
 
-### Supported CoC Asset Types in `010_in/`
-
 | Filename Example                      | Type             | Behavior & Parameters                                                                                                                                                                                                                                                                                                  | Speed / Duration                                                                    |
 | :------------------------------------ | :--------------- | :--------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | :---------------------------------------------------------------------------------- |
-| **`01_timelapse_prep_i10`**           | `timelapse_prep` | **Preprocessed & Photosphere-Restored Ingress Timelapse**: Automatically consumes restored, obstacle-free, centered footage from `005_raw_preprocessed/` (auto-triggered from `000_raw/` if missing). Stabilization is skipped as the clip is already 100% geometrically jitter-free. Interval is set to 10s (`_i10`). | Native clip duration (speed: $10\text{s} \times 30\text{fps} = \mathbf{300\times}$) |
+| **`01_timelapse_prep_i10`**           | `timelapse_prep` | **Preprocessed & Photosphere-Restored Ingress Timelapse**: Automatically consumes restored, obstacle-free, centered footage from `005_raw_preprocessed/<observation>/` (auto-triggered from `000_raw/` if missing). Stabilization is skipped as the clip is already 100% jitter-free. Interval is set to 10s (`_i10`). | Native clip duration (speed: $10\text{s} \times 30\text{fps} = \mathbf{300\times}$) |
 | **`01_timelapse_i10.mp4`**            | `timelapse`      | Standard Ingress timelapse with `_i[INTERVAL]` parameter (e.g. `_i10` = 1 frame every 10s). Subpixel solar limb convex-hull stabilization and white balance equalization.                                                                                                                                              | Native clip duration (speed: $10\text{s} \times 30\text{fps} = \mathbf{300\times}$) |
 | **`02_video_slowdown_10.mp4`**        | `video_slowdown` | High-speed burst video. Automatically filters black/corrupt frames, resamples $396.7\text{s}$ of pre-totality footage to `duration` (e.g. 10s), smooths camera exposure jumps, and stabilizes solar limb.                                                                                                              | 10.0s (speed: $\frac{396.7\text{s}}{10\text{s}} \approx \mathbf{40\times}$)         |
 | **`03_video_realtime.mp4`**           | `video_realtime` | Continuous 1x real-time video (30 fps) with lunar silhouette, corona, and Baily's beads tracking. Preserves exact 1:1 real-time duration.                                                                                                                                                                              | Native real duration ($\mathbf{1\times}$ Real-Time)                                 |
-| **`04_timelapse_prep_i10`**           | `timelapse_prep` | **Preprocessed & Photosphere-Restored Egress Timelapse**: Automatically consumes restored, foliage/branch-free footage from `005_raw_preprocessed/` (auto-triggered from `000_raw/` if missing). Stabilization is skipped. Interval is set to 10s (`_i10`).                                                            | Native clip duration (speed: $10\text{s} \times 30\text{fps} = \mathbf{300\times}$) |
+| **`04_timelapse_prep_i10`**           | `timelapse_prep` | **Preprocessed & Photosphere-Restored Egress Timelapse**: Automatically consumes restored, foliage/branch-free footage from `005_raw_preprocessed/<observation>/`. Interval is set to 10s (`_i10`).                                                                                                                   | Native clip duration (speed: $10\text{s} \times 30\text{fps} = \mathbf{300\times}$) |
 | **`04_timelapse_i10.mp4`**            | `timelapse`      | Standard Egress timelapse with `_i[INTERVAL]` parameter (`_i10` = 1 frame every 10s). Subpixel solar limb stabilization.                                                                                                                                                                                               | Native clip duration (speed: $10\text{s} \times 30\text{fps} = \mathbf{300\times}$) |
-| **`05_totality_6.jpg`**               | `totality`       | Multi-exposure Totality HDR composite artwork (synthesizing corona, ruby $H\alpha$ prominences, and Baily's beads across totality). Scaled with black letterbox padding; automatically tags subtitles and chapters as multi-phase artistic composite artwork.                                                          | 10.0s (or `_6` for 6s)                                                              |
+| **`05_totality_6.jpg`**               | `totality`       | Multi-exposure Totality HDR composite artwork (synthesizing corona, ruby $H\alpha$ prominences, and Baily's beads across totality). Scaled with black letterbox padding.                                                                                                                                            | 10.0s (or `_6` for 6s)                                                              |
 | **`05_photo_6.jpg`**                  | `photo`          | Single-exposure still image, scaled preserving aspect ratio with clean black letterbox padding for specified duration (e.g. 6s).                                                                                                                                                                                       | 10.0s (or `_6` for 6s)                                                              |
-| **`06_composite_arc_10`**             | `composite`      | Generates high-resolution composite artwork mosaic on-the-fly (`arc`, `circle`, `ellipse`, `sinusoid`, `spiral`, etc.) with prominent totality contacts (`C2`, `MAX`, `C3`), scaled to project resolution (16:9 1280x720), held for specified duration (e.g. 10s).                                                     | 10.0s                                                                               |
+| **`06_composite_circle_4k_10`**       | `composite`      | Generates high-resolution composite artwork mosaic on-the-fly (`arc`, `circle`, `ellipse`, `sinusoid`, `spiral`, etc.) with prominent totality contacts (`C2`, `MAX`, `C3`), scaled to project canvas, held for specified duration (e.g. 10s).                                                                      | 10.0s                                                                               |
 | **`07_endtitles.md`**                 | `endtitles`      | Markdown descriptor for closing credits and telemetry card (`# Telescope`, `# Cameras`, `# Software`, `# Author`, `# Music`). Renders 2x supersampled anti-aliased card with software pipeline credits, dynamic music credits, and date.                                                                               | 6.0s (or custom `_8` for 8s)                                                        |
-| **`01_music_corrubedo_nandoide.wav`** | `music`          | Soundtrack audio track (`[INDEX]_music_[TITLE]_[AUTHOR].[ext]`). Generically retargets and structures audio at 100% natural tempo with phase-aligned crossfades, synchronizing climax with Totality Max (~65s), muxing high-fidelity AAC 320 kbps into master video, and dynamically crediting in end titles.          | Full film duration (`181.6s`)                                                       |
+| **`01_music_corrubedo_nandoide.wav`** | `music`          | Soundtrack audio track (`[INDEX]_music_[TITLE]_[AUTHOR].[ext]`). Generically retargets audio at 100% natural tempo with phase-aligned crossfades, synchronizing climax with Totality Max, muxing high-fidelity AAC 320 kbps into master video, and dynamically crediting in end titles.                                | Full film duration                                                                  |
+
+---
+
+### 3. Clean Deliverables & Temporary Files Architecture (`040_out/`)
+
+To keep production outputs uncluttered, the pipeline maintains a strict separation between **final deliverables** (at the root of `040_out/<project_folder>/`) and **intermediate assets** (inside `040_out/<project_folder>/temp/`):
+
+```
+040_out/<project_folder>/
+├── <project_id>.mp4              # 🍎 Final Master Film (Embedded QuickTime ES/EN subs + Chapters + Music)
+├── <project_id>_chapters.txt     # 📺 YouTube-compliant chapters with 0:00 timestamp format
+├── <project_id>_en.srt           # 🇬🇧 English astronomical subtitles (Real-time telemetry)
+├── <project_id>_es.srt           # 🇪🇸 Spanish astronomical subtitles (Real-time telemetry)
+├── eclipse_composite_*.png/.jpg  # 🖼️ High-resolution standalone composite posters (when run directly)
+└── temp/                         # 📁 All intermediate clips, 4K canvases, waveforms, descriptions & JSONs
+    ├── 00_title.mp4
+    ├── 01_timelapse_*.mp4
+    ├── 03_video_realtime.mp4
+    ├── 07_endtitles.mp4
+    ├── full_eclipse_*_video.mp4
+    ├── art_01_dive_in.mp4
+    ├── art_02_dive_out.mp4
+    ├── art_composite_4k_*.png / .json
+    ├── composite_samples.json
+    ├── metadata_chapters_*.txt
+    └── youtube_description_*.txt
+```
 
 ---
 
 ## 🔬 Algorithmic Pipeline & Flow
 
 ```
-000_raw/ (Original Telescope Telemetry: DWARF mini, Seestar, etc.)
+000_raw/<observation>/ (Original Telescope Telemetry: DWARF mini, Seestar, etc.)
   │  • DWARF_mini_TELE_TL_2026-08-12-19-35-13-093.mp4
   │  • DWARF_mini_TELE_2026-08-12-20-20-36-811.mp4
   │  • DWARF_mini_TELE_TL_2026-08-12-20-32-53-127.mp4
   │  • gps.jpg (Coordinates: 43.235556°N, 7.558333°W, Alt: 438.7m)
   ▼
+005_raw_preprocessed/<observation>/ (Obstacle-free, Photosphere-Restored & C1-Extrapolated)
+  ▼
 030_db/eclipses_db.json (NASA Besselian Elements & Ephemeris DB)
   ▼
-010_in/ (Curated CoC Assets)                                              040_out/
+010_in/<project_folder>/ (Curated CoC Project)                   040_out/<project_folder>/temp/
 ┌────────────────────────┐                                        ┌────────────────────────┐
 │ [Dynamic Title Card]   │ ───► [Render Typography Card] ───────► │ 00_title.mp4           │
 │ (020_src/create_title) │      (2x Lanczos + Ephemeris Data)     │ (5.00s @ 30 fps)       │
 ├────────────────────────┤                                        ├────────────────────────┤
-│ 01_timelapse_i10.mp4   │ ───► [Solar Limb Stabilization] ─────► │ 01_timelapse_i10.mp4   │
-│ (Ingress Timelapse)    │      (Subpixel Convex Hull)            │ (8.90s @ 30 fps, x300) │
-├────────────────────────┤                                        ├────────────────────────┤
-│ 02_video_slowdown_10   │ ───► [Black Frame Filter +          ─► │ 02_video_slowdown_10   │
-│ (C2 Approach Burst)    │      10s Resample + Limb Track]        │ (10.00s @ 30 fps, x40) │
+│ 01_timelapse_prep_i10  │ ───► [Resolve Restored Footage] ─────► │ 01_timelapse_i10.mp4   │
+│ (Ingress Timelapse)    │      (Centered Photosphere)            │ (8.90s @ 30 fps, x300) │
 ├────────────────────────┤                                        ├────────────────────────┤
 │ 03_video_realtime.mp4  │ ───► [Totality Silhouette Track     ─► │ 03_video_realtime.mp4  │
 │ (Totality Video)       │      + Corona / Beads Tracking]        │ (107.33s @ 30 fps, 1x) │
 ├────────────────────────┤                                        ├────────────────────────┤
-│ 04_timelapse_i10.mp4   │ ───► [Adaptive Solar Limb Track     ─► │ 04_timelapse_i10.mp4   │
-│ (Egress Timelapse)     │      + Color Balance Eq]               │ (8.20s @ 30 fps, x300) │
+│ 04_timelapse_prep_i10  │ ───► [Resolve Restored Footage] ─────► │ 04_timelapse_i10.mp4   │
+│ (Egress Timelapse)     │      (Foliage-Free Photosphere)        │ (8.20s @ 30 fps, x300) │
 ├────────────────────────┤                                        ├────────────────────────┤
 │ 05_totality_6.jpg      │ ───► [Scale & Pad to Canvas]        ─► │ 05_totality_6.mp4      │
 │ (Totality HDR Artwork) │      (Preserve AR + Black Border)      │ (6.00s @ 30 fps)       │
 ├────────────────────────┤                                        ├────────────────────────┤
-│ 06_composite_arc_10    │ ───► [On-The-Fly Artwork Render]    ─► │ 06_composite_arc_10.mp4│
-│ (Mosaic Directive)     │      (Arc Mosaic + Central Contacts)   │ (10.00s @ 30 fps)      │
+│ 06_composite_circle_10 │ ───► [On-The-Fly Artwork Render]    ─► │ 06_composite_circle.mp4│
+│ (Mosaic Directive)     │      (No Metadata Block in Build)      │ (10.00s @ 30 fps)      │
 ├────────────────────────┤                                        ├────────────────────────┤
 │ 07_endtitles.md        │ ───► [Dynamic End Credits Render]   ─► │ 07_endtitles.mp4       │
-│ (Closing Credits Card) │      (2x Lanczos + Markdown Sections)  │ (6.00s @ 30 fps)       │
+│ (Closing Credits Card) │      (2x Lanczos + Dynamic Music Info) │ (6.00s @ 30 fps)       │
 └────────────────────────┘                                        └───────────┬────────────┘
                                                                               │
                                                                     [Master Assembly]
-                                                             (Cinematic Transitions: Freeze,
-                                                             Dip to Black / Hard Cut / Crossfade)
+                                                             (Standard Linear / Cinematic Art Dives)
                                                                               │
                                                                               ▼
                                                                   ┌────────────────────────┐
-                                                                  │ full_eclipse.mp4       │
-                                                                  │ (181.60s @ 30 fps)     │
+                                                                  │ temp/full_eclipse_     │
+                                                                  │ <style>_video.mp4      │
                                                                   └───────────┬────────────┘
                                                                               │
                                                                     [Astronomical Engine]
                                                                 (100% Direct RAW Timestamps +
                                                                  Multilingual Subtitles +
                                                                  QuickTime mov_text Muxing +
-                                                                 YouTube Chapters & Description)
+                                                                 Intelligent Music Sync)
                                                                               │
                                                                               ▼
                                           ┌───────────────────────────────────┼───────────────────────────────────┐
                                           ▼                                   ▼                                   ▼
                               ┌────────────────────────┐          ┌────────────────────────┐          ┌────────────────────────┐
-                              │ full_eclipse_es.srt    │          │ full_eclipse_subtitled │          │ youtube_chapters.txt   │
-                              │ full_eclipse_en.srt    │          │ .mp4 (QuickTime Dual)  │          │ youtube_description.txt│
-                              │ (YouTube / VLC)        │          │ (Native mov_text)      │          │ (YouTube Ready)        │
+                              │ <project_id>_es.srt    │          │ <project_id>.mp4       │          │ <project_id>           │
+                              │ <project_id>_en.srt    │          │ (QuickTime Dual Subs + │          │ _chapters.txt          │
+                              │ (YouTube / VLC)        │          │ Native Chapters + AAC) │          │ (YouTube Ready)        │
                               └────────────────────────┘          └────────────────────────┘          └────────────────────────┘
 ```
 
@@ -366,22 +417,31 @@ python 020_src/create_totality_hdr.py -v 010_in/03_video_realtime.mp4 -o 040_out
 > [!TIP]
 > **Workflow**: Save the resulting composite image (from web AI or the local OpenCV engine) as **`010_in/05_totality_6.jpg`**. The master build pipeline (`build_full_eclipse.py`) will automatically discover it, apply black letterbox padding, and tag it in subtitles and chapters.
 
-### 8. Film Assembly Layout Styles (`--film-style`)
+### 8. Multi-Project Assembly CLI (`-p` / `--project`)
 
-The master film assembler (`build_full_eclipse.py`) supports two distinct visual narrative layouts:
+The master film assembler (`build_full_eclipse.py`) and standalone composite generator (`create_eclipse_composite.py`) accept a target project name:
 
 ```bash
-# 1. Standard Linear Sequence Montage (Default):
-python 020_src/build_full_eclipse.py --film-style standard
+# 1. Assemble specific project (e.g. Standard Linear with Preprocessing):
+python 020_src/build_full_eclipse.py -p solar26_main_standard_preproc
 
-# 2. Cinematic 'Art' Narrative Montage (Camera Dives & Totality Max Climax):
-python 020_src/build_full_eclipse.py --film-style art
+# 2. Assemble Cinematic 'Art' Project with 4K Camera Dives:
+python 020_src/build_full_eclipse.py -p solar26_v2_art_preproc
+
+# 3. Assemble Raw Linear Footage with pre-totality slowdown burst:
+python 020_src/build_full_eclipse.py -p solar26_v1_standard
+
+# 4. Auto-detect project (picks the most recently modified project in 010_in/):
+python 020_src/build_full_eclipse.py
+
+# 5. Standalone 6000x6000 Circular Poster for specific project:
+python 020_src/create_eclipse_composite.py -p solar26_main_standard_preproc -l circle --size 6000 --contacts auto --show-labels
 ```
 
 | Montage Style              | Structure & Narrative Flow                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                      | Key Visual Transitions                                                                       |
 | :------------------------- | :---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | :------------------------------------------------------------------------------------------- |
-| **`standard`** *(default)* | Linear chronological progression through all CoC numbered assets in `010_in/`.                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                  | Fades to black with customizable freeze holds between assets.                                |
-| **`art`**                  | 1. **Title Card** (`00_title.mp4`).<br>2. **Composite Overview & Continuous Ingress Dive** (`art_01_dive_in.mp4`): Holds full composite canvas $\to$ dives into first sample disk $\to$ dissolves seamlessly into telescope footage.<br>3. **Partial Ingress Timelapse** (`01_timelapse_i10.mp4`).<br>4. **Pre-Totality Slowdown** (`02_video_slowdown_10.mp4`).<br>5. **Real-Time Totality Part 1** up to Totality Max.<br>6. **Totality Multi-Exposure HDR Artwork Insert** (`05_totality_6.mp4`): Crossfades smoothly at Max Eclipse ($t = 20:28:23\text{ CEST}$), holds, and crossfades back into footage.<br>7. **Real-Time Totality Part 2** from Totality Max through C3.<br>8. **Partial Egress Timelapse** (`04_timelapse_i10.mp4`).<br>9. **Continuous Egress Zoom-Out Dive** (`art_02_dive_out.mp4`): Zooms out from last sample disk back to full composite overview.<br>10. **Closing Credits & End Titles** (`07_endtitles.mp4`). | Continuous sub-pixel Lanczos-4 camera zoom dives + 0.8s crossfade dissolves at Totality Max. |
+| **`standard`** *(default)* | Linear chronological progression through all CoC numbered assets in `010_in/<project>/`.                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                       | Fades to black with customizable freeze holds between assets.                                |
+| **`art`**                  | 1. **Title Card** (`00_title.mp4`).<br>2. **Composite Overview & Continuous Ingress Dive** (`art_01_dive_in.mp4`): Holds full composite canvas $\to$ dives into first sample disk $\to$ dissolves seamlessly into telescope footage.<br>3. **Partial Ingress Timelapse** (`01_timelapse_prep_i10` or `01_timelapse_i10.mp4`).<br>4. **Real-Time Totality Part 1** up to Totality Max.<br>5. **Totality Multi-Exposure HDR Artwork Insert** (`05_totality_6.jpg`): Crossfades smoothly at Max Eclipse ($t = 20:28:23\text{ CEST}$), holds, and crossfades back into footage.<br>6. **Real-Time Totality Part 2** from Totality Max through C3.<br>7. **Partial Egress Timelapse** (`04_timelapse_prep_i10` or `04_timelapse_i10.mp4`).<br>8. **Continuous Egress Zoom-Out Dive** (`art_02_dive_out.mp4`): Zooms out from last sample disk back to full composite overview.<br>9. **Closing Credits & End Titles** (`07_endtitles.md`).               | Continuous sub-pixel Lanczos-4 camera zoom dives + 0.8s crossfade dissolves at Totality Max. |
 
 ### 9. Continuous Camera Dive Engine (`create_camera_dive.py`)
 Generates high-precision, sub-pixel Lanczos-4 affine camera dives between high-resolution composite mosaics (4K/8K) and telescope video footage:
@@ -391,10 +451,10 @@ Generates high-precision, sub-pixel Lanczos-4 affine camera dives between high-r
 
 ```bash
 # Standalone Ingress Zoom-In Dive:
-python 020_src/create_camera_dive.py --composite 040_out/art_composite_4k_arc.png --meta 040_out/art_composite_4k_arc.json --sample 0 --direction zoom_in -o 040_out/art_01_dive_in.mp4
+python 020_src/create_camera_dive.py --composite 040_out/solar26_v2_art_preproc/temp/art_composite_4k_circle.png --meta 040_out/solar26_v2_art_preproc/temp/art_composite_4k_circle.json --sample 0 --direction zoom_in -o 040_out/solar26_v2_art_preproc/temp/art_01_dive_in.mp4
 
 # Standalone Egress Zoom-Out Dive:
-python 020_src/create_camera_dive.py --composite 040_out/art_composite_4k_arc.png --meta 040_out/art_composite_4k_arc.json --sample -1 --direction zoom_out -o 040_out/art_02_dive_out.mp4
+python 020_src/create_camera_dive.py --composite 040_out/solar26_v2_art_preproc/temp/art_composite_4k_circle.png --meta 040_out/solar26_v2_art_preproc/temp/art_composite_4k_circle.json --sample -1 --direction zoom_out -o 040_out/solar26_v2_art_preproc/temp/art_02_dive_out.mp4
 ```
 
 ### 10. Ephemeris Database CLI & Refresh
@@ -417,7 +477,7 @@ python 020_src/create_compact_clip.py
 
 ### 12. Force Re-processing from Scratch
 ```bash
-python 020_src/build_full_eclipse.py --force-all
+python 020_src/build_full_eclipse.py -p solar26_main_standard_preproc --force-all
 ```
 
 ---
@@ -426,107 +486,111 @@ python 020_src/build_full_eclipse.py --force-all
 
 ```
 eclipse_assembler/
-├── 000_raw/                          # Untouched raw telescope footage & observer GPS photo
-│   ├── DWARF_mini_TELE_TL_2026-08-12-19-35-13-093.mp4
-│   ├── DWARF_mini_TELE_2026-08-12-20-20-36-811.mp4
-│   ├── DWARF_mini_TELE_TL_2026-08-12-20-32-53-127.mp4
-│   └── gps.jpg                       # Observer coordinates & elevation metadata photo
+├── 000_raw/                                  # Untouched raw telescope footage & observer GPS photo by observation
+│   └── solar26/                              # Observation campaign: Total Solar Eclipse 2026
+│       ├── DWARF_mini_TELE_TL_2026-08-12-19-35-13-093.mp4
+│       ├── DWARF_mini_TELE_2026-08-12-20-20-36-811.mp4
+│       ├── DWARF_mini_TELE_TL_2026-08-12-20-32-53-127.mp4
+│       └── gps.jpg                           # Observer coordinates & elevation metadata photo
 │
-├── 005_raw_preprocessed/             # ★ Autonomous Photosphere-Restored & C1-Extrapolated Raw Timelapses
-│   ├── DWARF_mini_TELE_TL_2026-08-12-19-35-13-093.mp4 # Ingress (288 frames: pre-C1, C1 contact & full sequence)
-│   └── DWARF_mini_TELE_TL_2026-08-12-20-32-53-127.mp4 # Egress (293 frames: foliage/branch-free restored photosphere)
+├── 005_raw_preprocessed/                     # ★ Autonomous Photosphere-Restored & C1-Extrapolated Raw Timelapses
+│   └── solar26/                              # Restored timelapses mapped to observation campaign
+│       ├── DWARF_mini_TELE_TL_2026-08-12-19-35-13-093.mp4 # Ingress (288 frames: pre-C1, C1 contact & full sequence)
+│       └── DWARF_mini_TELE_TL_2026-08-12-20-32-53-127.mp4 # Egress (293 frames: foliage/branch-free restored photosphere)
 │
-├── 010_in/                           # Curated source input assets (CoC naming)
-│   ├── 01_music_corrubedo_nandoide.wav # Optional musical soundtrack (CoC: NN_music_Title_Author.wav)
-│   ├── 01_timelapse_prep_i10         # Ingress directive (points to 005_raw_preprocessed/)
-│   ├── 02_video_slowdown_10.mp4      # Pre-totality burst video (10s resample)
-│   ├── 03_video_realtime.mp4         # Totality real-time continuous video (1x)
-│   ├── 04_timelapse_prep_i10         # Egress directive (points to 005_raw_preprocessed/)
-│   ├── 05_totality_6.jpg             # Totality HDR multi-phase artwork (6s hold)
-│   ├── 06_composite_circle_4k_10     # Circular 4K composite mosaic directive (10s hold)
-│   └── 07_endtitles.md               # Closing credits descriptor (6s hold)
+├── 010_in/                                   # Curated projects (Convention-over-Configuration)
+│   ├── solar26_main_standard_preproc/        # Project: Official main film (Standard linear + Restored timelapses)
+│   │   ├── 01_music_corrubedo_nandoide.wav   # Soundtrack audio track
+│   │   ├── 01_timelapse_prep_i10             # Ingress directive (points to 005_raw_preprocessed/solar26/)
+│   │   ├── 03_video_realtime.mp4             # Totality real-time continuous video (1x)
+│   │   ├── 04_timelapse_prep_i10             # Egress directive (points to 005_raw_preprocessed/solar26/)
+│   │   ├── 05_totality_6.jpg                 # Totality HDR multi-phase artwork (6s hold)
+│   │   ├── 06_composite_circle_4k_10         # Circular 4K composite mosaic directive (10s hold)
+│   │   └── 07_endtitles.md                   # Closing credits descriptor (6s hold)
+│   │
+│   ├── solar26_v1_standard/                  # Project: Version 1 (Standard linear + Raw footage + Slowdown burst)
+│   │   ├── 01_music_corrubedo_nandoide.wav
+│   │   ├── 01_timelapse_i10.mp4
+│   │   ├── 02_video_slowdown_10.mp4
+│   │   ├── 03_video_realtime.mp4
+│   │   ├── 04_timelapse_i10.mp4
+│   │   ├── 05_totality_6.jpg
+│   │   ├── 06_composite_arc_10
+│   │   └── 07_endtitles.md
+│   │
+│   └── solar26_v2_art_preproc/               # Project: Version 2 (Cinematic Art dives + Restored timelapses)
+│       ├── 01_music_corrubedo_nandoide.wav
+│       ├── 01_timelapse_prep_i10
+│       ├── 03_video_realtime.mp4
+│       ├── 04_timelapse_prep_i10
+│       ├── 05_totality_6.jpg
+│       ├── 06_composite_circle_4k_10
+│       └── 07_endtitles.md
 │
-├── 020_src/                          # Python source code
-│   ├── extract_eclipse_geometry.py   # ★ Orbital kinematics solver & C1 extrapolation engine
-│   ├── build_master_solar_disk.py    # ★ 100% complete solar photosphere fusion engine
-│   ├── render_restored_eclipse_video.py # ★ Photosphere applicator & occultation bite renderer
-│   ├── preprocess_raw_eclipse_timelapses.py # ★ Master raw timelapse preprocessing orchestrator
-│   ├── build_full_eclipse.py         # ★ CoC Master pipeline and assembly script (--film-style standard/art)
-│   ├── create_camera_dive.py         # ★ Continuous sub-pixel Lanczos-4 camera dive zoom generator
-│   ├── add_audio_track.py            # ★ Intelligent musical phrase retargeting and audio muxing
-│   ├── create_totality_hdr.py        # ★ Totality HDR composite engine & dynamic AI prompt adapter
-│   ├── eclipse_ephemeris_db.py       # ★ Universal Solar/Lunar Besselian database & solver
-│   ├── fetch_eclipses_horizons.py    # ★ NASA JPL Horizons API fetcher & DB builder (2026-2036)
-│   ├── compare_contacts_ephemeris.py # ★ Observational telemetry vs. NASA ephemeris comparison
-│   ├── create_title_card.py          # ★ Cinematic opening title card generator (00_title.mp4)
-│   ├── create_end_titles.py          # ★ Cinematic closing credits generator (07_endtitles.mp4)
-│   ├── generate_eclipse_subtitles.py # ★ 100% RAW-based multilingual subtitle & YouTube chapters generator
-│   ├── create_eclipse_composite.py   # ★ High-resolution composite mosaic generator & JSON metadata
-│   ├── create_compact_clip.py        # 30s accelerated lightweight generator
-│   ├── stabilize_eclipse.py          # Core solar limb subpixel stabilizer
-│   └── stabilize_full_film.py        # Global 2-pass master film stabilizer
+├── 020_src/                                  # Python source code & modular pipeline engines
+│   ├── project_manager.py                    # ★ Multi-project & multi-observation resolution manager
+│   ├── extract_eclipse_geometry.py           # ★ Orbital kinematics solver & C1 extrapolation engine
+│   ├── build_master_solar_disk.py            # ★ 100% complete solar photosphere fusion engine
+│   ├── render_restored_eclipse_video.py      # ★ Photosphere applicator & occultation bite renderer
+│   ├── preprocess_raw_eclipse_timelapses.py  # ★ Master raw timelapse preprocessing orchestrator
+│   ├── build_full_eclipse.py                 # ★ CoC Master pipeline and assembly script (--project, --film-style)
+│   ├── create_camera_dive.py                 # ★ Continuous sub-pixel Lanczos-4 camera dive zoom generator
+│   ├── add_audio_track.py                    # ★ Intelligent musical phrase retargeting and audio muxing
+│   ├── create_totality_hdr.py                # ★ Totality HDR composite engine & dynamic AI prompt adapter
+│   ├── eclipse_ephemeris_db.py               # ★ Universal Solar/Lunar Besselian database & solver
+│   ├── fetch_eclipses_horizons.py            # ★ NASA JPL Horizons API fetcher & DB builder (2026-2036)
+│   ├── compare_contacts_ephemeris.py         # ★ Observational telemetry vs. NASA ephemeris comparison
+│   ├── create_title_card.py                  # ★ Cinematic opening title card generator (00_title.mp4)
+│   ├── create_end_titles.py                  # ★ Cinematic closing credits generator (07_endtitles.mp4)
+│   ├── generate_eclipse_subtitles.py         # ★ 100% RAW-based multilingual subtitle & YouTube chapters generator
+│   ├── create_eclipse_composite.py           # ★ High-resolution composite mosaic generator & JSON metadata
+│   ├── create_compact_clip.py                # 30s accelerated lightweight generator
+│   ├── stabilize_eclipse.py                  # Core solar limb subpixel stabilizer
+│   └── stabilize_full_film.py                # Global 2-pass master film stabilizer
 │
-├── 030_db/                           # ★ Universal astronomical database
-│   └── eclipses_db.json              # Solar & Lunar eclipse NASA Besselian elements catalog (2026-2036)
+├── 030_db/                                   # ★ Universal astronomical database
+│   └── eclipses_db.json                      # Solar & Lunar eclipse NASA Besselian elements catalog (2026-2036)
 │
-├── 040_out/                          # Generated stabilized output videos, artwork & subtitles
-│   ├── 00_title.mp4                  # Cinematic opening title card clip (5.00s)
-│   ├── 00_title.png                  # Lossless anti-aliased title graphic
-│   ├── 01_timelapse_i10.mp4          # Stabilized partial ingress (8.90s, speed x300)
-│   ├── 02_video_slowdown_10.mp4      # Filtered & stabilized pre-totality (10.00s)
-│   ├── 03_video_realtime.mp4         # Stabilized totality (107.33s, speed 1x)
-│   ├── 04_timelapse_i10.mp4          # Stabilized partial egress (8.20s, speed x300)
-│   ├── 05_totality_6.mp4             # Letterboxed Totality HDR artwork video (6.00s)
-│   ├── 06_composite_arc_10.mp4       # 16:9 composite arc video with contacts (10.00s)
-│   ├── 06_composite_arc_10.json      # 📋 Frame timestamps metadata for composite
-│   ├── 07_endtitles.mp4              # Closing credits video clip (6.00s)
-│   ├── 07_endtitles.jpg              # High-resolution closing credits graphic
-│   ├── full_eclipse_standard_video.mp4# ★ Standard clean master film (with audio, no subs)
-│   ├── full_eclipse_standard.mp4     # 🍎 Standard subtitled master with QuickTime tracks (ES + EN)
-│   ├── full_eclipse_standard_es.srt  # 🇪🇸 Standard Spanish subtitles (YouTube / VLC)
-│   ├── full_eclipse_standard_en.srt  # 🇬🇧 Standard English subtitles (YouTube / VLC)
-│   ├── youtube_chapters_standard.txt # 📺 Standard YouTube chapters
-│   ├── youtube_description_standard.txt# 📝 Standard YouTube description
-│   ├── full_eclipse_art_video.mp4    # ★ Art clean master film (camera dives, totality HDR, with audio)
-│   ├── full_eclipse_art.mp4          # 🍎 Art subtitled master with QuickTime tracks (ES + EN)
-│   ├── full_eclipse_art_es.srt       # 🇪🇸 Art Spanish subtitles (YouTube / VLC)
-│   ├── full_eclipse_art_en.srt       # 🇬🇧 Art English subtitles (YouTube / VLC)
-│   ├── youtube_chapters_art.txt      # 📺 Art YouTube chapters
-│   ├── youtube_description_art.txt   # 📝 Art YouTube description
-│   ├── full_eclipse_30s.mp4          # ⚡ Compact 30s accelerated film
-│   ├── eclipse_contacts_comparison.md# 📊 Markdown telemetry vs ephemeris comparison report
-│   ├── eclipse_contacts_comparison.json# 📋 JSON dataset of observational residuals
-│   ├── eclipse_composite_arc_*.png   # 🖼️ High-resolution arc composite artwork (720p, 4K UHD)
-│   ├── eclipse_composite_circle_*.png# 🖼️ High-resolution circular/ellipse composite artwork
-│   ├── eclipse_composite_sinusoid_*.png# 🖼️ High-resolution sinusoidal composite artwork (HD, 4K, 8K)
-│   └── eclipse_composite_spiral_*.png# 🖼️ High-resolution expanding spiral composite artwork (3840p)
+├── 040_out/                                  # Generated stabilized master deliverables & project exports
+│   ├── solar26_main_standard_preproc/        # Output for project solar26_main
+│   │   ├── solar26_main.mp4                  # 🍎 Final master film with QuickTime dual subs & AAC music
+│   │   ├── solar26_main_chapters.txt         # 📺 YouTube-formatted chapters
+│   │   ├── solar26_main_en.srt               # 🇬🇧 English astronomical subtitles
+│   │   ├── solar26_main_es.srt               # 🇪🇸 Spanish astronomical subtitles
+│   │   ├── eclipse_composite_circle_6000p.png# 🖼️ High-resolution standalone poster (when run directly)
+│   │   ├── eclipse_composite_circle_6000p.jpg
+│   │   └── temp/                             # 📁 Intermediate clips, title cards, waveforms & JSONs
+│   │
+│   ├── solar26_v1_standard/                  # Output for project solar26_v1
+│   │   ├── solar26_v1.mp4                    # 🍎 Final master film
+│   │   ├── solar26_v1_chapters.txt
+│   │   ├── solar26_v1_en.srt
+│   │   ├── solar26_v1_es.srt
+│   │   └── temp/
+│   │
+│   └── solar26_v2_art_preproc/               # Output for project solar26_v2
+│       ├── solar26_v2.mp4                    # 🍎 Final cinematic Art master film
+│       ├── solar26_v2_chapters.txt
+│       ├── solar26_v2_en.srt
+│       ├── solar26_v2_es.srt
+│       └── temp/
 │
-├── requirements.txt                  # Python package dependencies
-└── README.md                         # Project documentation
+├── requirements.txt                          # Python package dependencies
+└── README.md                                 # Project documentation
 ```
 
 ---
 
 ## 📊 Summary of Master Output Assets
 
-| Output Asset                                   | Resolution / Format | Frame Rate / Type | Duration / Size        | Description                                                                                    |
-| :--------------------------------------------- | :------------------ | :---------------- | :--------------------- | :--------------------------------------------------------------------------------------------- |
-| **`00_title.mp4`**                             | 1280x720            | 30.0 fps          | 5.00s (0.02 MB)        | Cinematic title card with ephemeris metadata                                                   |
-| **`01_timelapse_i10.mp4`**                     | 1280x720            | 30.0 fps          | 8.90s (1.31 MB)        | Stabilized partial ingress ($R = 238.5\text{ px}$, speed x300)                                 |
-| **`02_video_slowdown_10.mp4`**                 | 1280x720            | 30.0 fps          | 10.00s (0.69 MB)       | Filtered & stabilized pre-totality ($396.7\text{s} \to 10\text{s}$, speed x40)                 |
-| **`03_video_realtime.mp4`**                    | 1280x720            | 30.0 fps          | 107.33s (13.71 MB)     | Totality & corona in exact 1x Real-Time                                                        |
-| **`04_timelapse_i10.mp4`**                     | 1280x720            | 30.0 fps          | 8.20s (2.66 MB)        | Stabilized partial egress ($R = 237.5\text{ px}$, speed x300)                                  |
-| **`05_totality_6.mp4`**                        | 1280x720            | 30.0 fps          | 6.00s (0.12 MB)        | Letterboxed Totality HDR composite artwork video                                               |
-| **`06_composite_circle_4k_10.mp4`**            | 1280x720            | 30.0 fps          | 10.00s (0.05 MB)       | Native 16:9 circular mosaic clip with prominent contacts                                       |
-| **`07_endtitles.mp4`**                         | 1280x720            | 30.0 fps          | 6.00s (0.07 MB)        | Closing credits and production telemetry card                                                  |
-| **`full_eclipse_art.mp4`**                     | **1280x720**        | **30.0 fps**      | **176.07s (20.25 MB)** | 🍎 **Master Film (Art): Dual QuickTime subs, camera dives, Totality HDR fusion & synced audio** |
-| **`full_eclipse_art_video.mp4`**               | **1280x720**        | **30.0 fps**      | **176.07s (20.24 MB)** | 🎬 **Master Clean Film (Art): Clean video + synchronized audio track**                          |
-| **`full_eclipse_standard.mp4`**                | **1280x720**        | **30.0 fps**      | **181.60s (19.59 MB)** | 🍎 **Master Film (Standard): Linear sequence with dual QuickTime subs & synced audio**          |
-| **`full_eclipse_standard_video.mp4`**          | **1280x720**        | **30.0 fps**      | **181.60s (19.58 MB)** | 🎬 **Master Clean Film (Standard): Clean linear video + synchronized audio track**              |
-| **`full_eclipse_art_es.srt` / `_en.srt`**      | SubRip              | UTF-8             | Subtitles              | 🇪🇸🇬🇧 **Astronomical subtitles for Art film with real-time telemetry**                            |
-| **`full_eclipse_standard_es.srt` / `_en.srt`** | SubRip              | UTF-8             | Subtitles              | 🇪🇸🇬🇧 **Astronomical subtitles for Standard film with real-time telemetry**                       |
-| **`youtube_chapters_art.txt`**                 | Plain Text          | UTF-8             | Chapters               | 📺 **YouTube chapters formatted for Art film timestamps**                                       |
-| **`youtube_chapters_standard.txt`**            | Plain Text          | UTF-8             | Chapters               | 📺 **YouTube chapters formatted for Standard film timestamps**                                  |
+| Output Asset (in `040_out/<project>/`) | Resolution / Format | Frame Rate / Type | Duration / Size | Description |
+| :--- | :--- | :--- | :--- | :--- |
+| **`<project_id>.mp4`** | **1280x720** (or target) | **30.0 fps** | **~168–181s** | 🍎 **Master Film: Dual QuickTime embedded subtitles (ES+EN), chapters, synchronized musical score** |
+| **`<project_id>_en.srt`** | SubRip (.srt) | UTF-8 | Subtitles | 🇬🇧 **Astronomical subtitles in English with real-time telemetry from camera NTP/GPS** |
+| **`<project_id>_es.srt`** | SubRip (.srt) | UTF-8 | Subtitles | 🇪🇸 **Astronomical subtitles in Spanish with real-time telemetry from camera NTP/GPS** |
+| **`<project_id>_chapters.txt`** | Plain Text | UTF-8 | Chapters | 📺 **YouTube chapters formatted with exact timestamps** |
+| **`eclipse_composite_*.png/.jpg`** | Up to 16K UHD | Lossless / JPEG | Static Artwork | 🖼️ **High-resolution standalone eclipse progression poster** |
+| **`temp/`** | Directory | — | — | 📁 **Intermediate rendering directory containing raw stitched video, audio waveforms, and JSON metadata** |
 
 ---
 

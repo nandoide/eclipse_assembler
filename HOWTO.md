@@ -91,52 +91,113 @@ The **Eclipse Assembler** is engineered to transform heterogeneous raw captures 
 
 ---
 
-## 2. Directory Structure & Convention-Over-Configuration (CoC)
+## 2. Directory Structure & Multi-Project Architecture (CoC)
 
 > [!NOTE]
 > **Illustrative Concrete Case Study**: The directory structure and file names shown below illustrate a specific real-world execution for the **August 12, 2026 Total Solar Eclipse** recorded with a DWARFLAB DWARF mini smart telescope in 720p. The architecture is fully generic and automatically scales to any eclipse date, observer coordinates, telescope or camera brand (e.g. ZWO Seestar, Vaonis, Sony/Canon DSLRs), and arbitrary output resolutions (1080p, 4K, 8K).
 
 ```
 eclipse26/
-├── 000_raw/                 # Untouched telescope files (timestamps & GPS EXIF source)
-│   ├── DWARF_mini_TELE_TL_2026-08-12-19-35-13-093.mp4
-│   ├── DWARF_mini_TELE_2026-08-12-20-20-36-811.mp4
-│   ├── DWARF_mini_TELE_TL_2026-08-12-20-32-53-127.mp4
-│   └── gps.jpg              # Any photo with EXIF GPS coordinates of observation site
-├── 005_raw_preprocessed/    # Autonomous Photosphere-Restored & Centered Raw Timelapses
-│   ├── DWARF_mini_TELE_TL_2026-08-12-19-35-13-093.mp4
-│   └── DWARF_mini_TELE_TL_2026-08-12-20-32-53-127.mp4
-├── 010_in/                  # Curated CoC source clips and instructions
-│   ├── 01_music_corrubedo_nandoide.wav # Soundtrack ([INDEX]_music_[TITLE]_[AUTHOR].[ext])
-│   ├── 01_timelapse_prep_i10 (or 01_timelapse_i10.mp4)
-│   ├── 02_video_slowdown_10.mp4
-│   ├── 03_video_realtime.mp4
-│   ├── 04_timelapse_prep_i10 (or 04_timelapse_i10.mp4)
-│   ├── 05_totality_6.jpg (or 05_photo_6.jpg)
-│   ├── 06_composite_arc_10
-│   └── 07_endtitles.md
-├── 020_src/                 # Core Python engine modules
-│   ├── add_audio_track.py
-│   ├── build_full_eclipse.py
-│   ├── build_master_solar_disk.py
-│   ├── render_restored_eclipse_video.py
-│   ├── preprocess_raw_eclipse_timelapses.py
-│   ├── create_totality_hdr.py
-│   ├── create_eclipse_composite.py
-│   ├── create_title_card.py
-│   ├── create_end_titles.py
-│   ├── eclipse_ephemeris_db.py
-│   ├── fetch_eclipses_horizons.py
-│   ├── generate_eclipse_subtitles.py
-│   ├── stabilize_eclipse.py
-│   └── compare_contacts_ephemeris.py
-├── 030_db/                  # Persistent SQLite & JSON ephemeris cache
+├── 000_raw/                                  # Untouched telescope files (timestamps & GPS EXIF source)
+│   └── solar26/                              # Observation campaign subfolder
+│       ├── DWARF_mini_TELE_TL_2026-08-12-19-35-13-093.mp4
+│       ├── DWARF_mini_TELE_2026-08-12-20-20-36-811.mp4
+│       ├── DWARF_mini_TELE_TL_2026-08-12-20-32-53-127.mp4
+│       └── gps.jpg                           # Any photo with EXIF GPS coordinates of observation site
+│
+├── 005_raw_preprocessed/                     # Autonomous Photosphere-Restored & Centered Raw Timelapses
+│   └── solar26/                              # Preprocessed timelapses for observation campaign
+│       ├── DWARF_mini_TELE_TL_2026-08-12-19-35-13-093.mp4
+│       └── DWARF_mini_TELE_TL_2026-08-12-20-32-53-127.mp4
+│
+├── 010_in/                                   # Curated CoC Projects
+│   ├── solar26_main_standard_preproc/        # Project: Official main film (Standard linear + Restored)
+│   │   ├── 01_music_corrubedo_nandoide.wav   # Soundtrack ([INDEX]_music_[TITLE]_[AUTHOR].[ext])
+│   │   ├── 01_timelapse_prep_i10             # Ingress directive (points to 005_raw_preprocessed/solar26/)
+│   │   ├── 03_video_realtime.mp4             # Totality real-time continuous video (1x)
+│   │   ├── 04_timelapse_prep_i10             # Egress directive (points to 005_raw_preprocessed/solar26/)
+│   │   ├── 05_totality_6.jpg                 # Totality HDR artwork (6s hold)
+│   │   ├── 06_composite_circle_4k_10         # Circular 4K composite mosaic directive (10s hold)
+│   │   └── 07_endtitles.md                   # Closing credits descriptor (6s hold)
+│   │
+│   ├── solar26_v1_standard/                  # Project: Version 1 (Standard linear + Raw slowdown)
+│   │   ├── 01_music_corrubedo_nandoide.wav
+│   │   ├── 01_timelapse_i10.mp4
+│   │   ├── 02_video_slowdown_10.mp4
+│   │   ├── 03_video_realtime.mp4
+│   │   ├── 04_timelapse_i10.mp4
+│   │   ├── 05_totality_6.jpg
+│   │   ├── 06_composite_arc_10
+│   │   └── 07_endtitles.md
+│   │
+│   └── solar26_v2_art_preproc/               # Project: Version 2 (Cinematic Art dives + Restored)
+│       ├── 01_music_corrubedo_nandoide.wav
+│       ├── 01_timelapse_prep_i10
+│       ├── 03_video_realtime.mp4
+│       ├── 04_timelapse_prep_i10
+│       ├── 05_totality_6.jpg
+│       ├── 06_composite_circle_4k_10
+│       └── 07_endtitles.md
+│
+├── 020_src/                                  # Core Python engine modules
+│   ├── project_manager.py                    # Multi-project & multi-observation resolution manager
+│   ├── build_full_eclipse.py                 # Master pipeline and assembly script
+│   ├── create_camera_dive.py                 # Continuous sub-pixel Lanczos-4 camera dive zoom generator
+│   ├── add_audio_track.py                    # Musical phrase retargeting and audio muxing
+│   ├── build_master_solar_disk.py            # Complete solar photosphere fusion engine
+│   ├── render_restored_eclipse_video.py      # Photosphere applicator & occultation bite renderer
+│   ├── preprocess_raw_eclipse_timelapses.py  # Master raw timelapse preprocessing orchestrator
+│   ├── create_totality_hdr.py                # Totality HDR composite engine & dynamic AI prompt adapter
+│   ├── create_eclipse_composite.py           # High-resolution composite mosaic generator & JSON metadata
+│   ├── create_title_card.py                  # Cinematic opening title card generator (00_title.mp4)
+│   ├── create_end_titles.py                  # Cinematic closing credits generator (07_endtitles.mp4)
+│   ├── eclipse_ephemeris_db.py               # Universal Solar/Lunar Besselian database & solver
+│   ├── fetch_eclipses_horizons.py            # NASA JPL Horizons API fetcher & DB builder (2026-2036)
+│   ├── generate_eclipse_subtitles.py         # 100% RAW-based multilingual subtitle & YouTube chapters generator
+│   ├── stabilize_eclipse.py                  # Core solar limb subpixel stabilizer
+│   └── compare_contacts_ephemeris.py         # Observational telemetry vs. NASA ephemeris comparison
+│
+├── 030_db/                                   # Persistent SQLite & JSON ephemeris cache
 │   └── eclipses_db.json
-├── 040_out/                 # Rendered assets, composite art, subtitles, and master film
-└── requirements.txt
+│
+├── 040_out/                                  # Rendered deliverables and project outputs
+│   ├── solar26_main_standard_preproc/
+│   │   ├── solar26_main.mp4                  # 🍎 Final master film with QuickTime dual subs & AAC music
+│   │   ├── solar26_main_chapters.txt         # 📺 YouTube-formatted chapters
+│   │   ├── solar26_main_en.srt               # 🇬🇧 English astronomical subtitles
+│   │   ├── solar26_main_es.srt               # 🇪🇸 Spanish astronomical subtitles
+│   │   ├── eclipse_composite_circle_6000p.png# 🖼️ High-resolution standalone poster (when run directly)
+│   │   ├── eclipse_composite_circle_6000p.jpg
+│   │   └── temp/                             # 📁 Intermediate clips, title cards, waveforms & JSONs
+│   │
+│   ├── solar26_v1_standard/
+│   │   ├── solar26_v1.mp4
+│   │   ├── solar26_v1_chapters.txt
+│   │   ├── solar26_v1_en.srt
+│   │   ├── solar26_v1_es.srt
+│   │   └── temp/
+│   │
+│   └── solar26_v2_art_preproc/
+│       ├── solar26_v2.mp4
+│       ├── solar26_v2_chapters.txt
+│       ├── solar26_v2_en.srt
+│       ├── solar26_v2_es.srt
+│       └── temp/
+│
+├── requirements.txt
+└── README.md
 ```
 
-### CoC Asset Naming Grammar:
+### Project Naming Nomenclature:
+`010_in/<observation>_<project_name>_<layout>[_<preproc>]/`
+
+- **`<observation>`**: The observation campaign folder in `000_raw/` (e.g. `solar26`).
+- **`<project_name>`**: Sub-identifier (e.g. `main`, `v1`, `v2`).
+- **`project_id`**: `<observation>_<project_name>` (e.g. `solar26_main`). Identifies all final deliverables in `040_out/`.
+- **`<layout>`**: `standard` (linear chronology) or `art` (camera dives, crossfades at Totality Max).
+- **`[_preproc]`**: Optional flag indicating the project uses preprocessed restored footage from `005_raw_preprocessed/<observation>/`.
+
+### CoC Asset Naming Grammar inside Projects:
 `[INDEX]_[TYPE]_[PARAMS/INTERVAL/LAYOUT/TITLE]_[DURATION/AUTHOR].[ext]`
 
 - `_i[N]` specifies intervalometer step in seconds (e.g., `_i10` = 1 frame every 10s $\to$ $300\times$ speedup at 30 fps).
