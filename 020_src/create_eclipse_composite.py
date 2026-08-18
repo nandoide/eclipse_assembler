@@ -248,7 +248,9 @@ def detect_clip_telemetry(clip_path, raw_dir="000_raw"):
     if best_raw is None or best_diff > 30.0:
         return None
 
-    m = re.search(r"(\d{4})-(\d{2})-(\d{2})-(\d{2})-(\d{2})-(\d{2})-(\d{3})", os.path.basename(best_raw))
+    m = re.search(r"(\d{4})-(\d{2})-(\d{2})-(\d{2})-(\d{2})-(\d{2})-(\d{3})", os.path.basename(match_source))
+    if not m and best_raw:
+        m = re.search(r"(\d{4})-(\d{2})-(\d{2})-(\d{2})-(\d{2})-(\d{2})-(\d{3})", os.path.basename(best_raw))
     if not m:
         return None
     y, mo, d, h, mi, s, ms = map(int, m.groups())
