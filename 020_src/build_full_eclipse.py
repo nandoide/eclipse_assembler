@@ -60,7 +60,7 @@ from stabilize_eclipse import extract_pure_solar_limb, find_circle_center_fixed_
 # COC PARSER & ASSET DISCOVERY
 # ─────────────────────────────────────────────────────────────────────────────
 
-def parse_coc_filename(filepath):
+def parse_coc_filename(filepath, is_project_preprocessed=False):
     """
     Parses CoC metadata from a filename in 010_in/.
     """
@@ -85,7 +85,7 @@ def parse_coc_filename(filepath):
     music_author = None
 
     interval = None
-    is_preprocessed = False
+    is_preprocessed = is_project_preprocessed
     if primary_token == "timelapse":
         asset_type = "timelapse"
         interval = 10.0
@@ -174,7 +174,7 @@ def parse_coc_filename(filepath):
     }
 
 
-def discover_coc_assets(in_dir="010_in"):
+def discover_coc_assets(in_dir="010_in", is_project_preprocessed=False):
     """
     Scans in_dir for files matching CoC rules, separating visual sequence assets
     from audio tracks. Returns (visual_assets, music_asset).
@@ -182,22 +182,40 @@ def discover_coc_assets(in_dir="010_in"):
     if not os.path.exists(in_dir):
         return [], None
 
-    visual_assets = []
+    raw_visual_map = {}
     music_asset = None
 
-    for fname in os.listdir(in_dir):
+    for fname in sorted(os.listdir(in_dir)):
         if fname.startswith('.') or fname.startswith('tmp_') or fname.endswith('.tmp'):
             continue
         full_path = os.path.join(in_dir, fname)
-        item = parse_coc_filename(full_path)
+        if os.path.isdir(full_path):
+            continue
+        item = parse_coc_filename(full_path, is_project_preprocessed=is_project_preprocessed)
         if item is not None:
             if item['asset_type'] == 'music':
                 if music_asset is None:
                     music_asset = item
             else:
-                visual_assets.append(item)
+                idx = item['index']
+                if idx in raw_visual_map:
+                    existing = raw_visual_map[idx]
+                    sz_new = os.path.getsize(full_path) if os.path.exists(full_path) else 0
+                    sz_old = os.path.getsize(existing['path']) if os.path.exists(existing['path']) else 0
+                    if is_project_preprocessed:
+                        if item['is_preprocessed'] and not existing['is_preprocessed']:
+                            raw_visual_map[idx] = item
+                        elif item['is_preprocessed'] == existing['is_preprocessed'] and sz_new > sz_old:
+                            raw_visual_map[idx] = item
+                    else:
+                        if sz_new > 0 and sz_old == 0:
+                            raw_visual_map[idx] = item
+                        elif not item['is_preprocessed'] and existing['is_preprocessed']:
+                            raw_visual_map[idx] = item
+                else:
+                    raw_visual_map[idx] = item
 
-    visual_assets.sort(key=lambda x: x['index'])
+    visual_assets = sorted(raw_visual_map.values(), key=lambda x: x['index'])
     return visual_assets, music_asset
 
 
@@ -943,6 +961,8 @@ def process_photo_asset(
 def process_composite_asset(
     asset_meta: dict,
     out_path: str,
+    project: str = None,
+    in_dir: str = "010_in",
     out_dir: str = "040_out",
     master_w: int = 1280,
     master_h: int = 720,
@@ -968,6 +988,8 @@ def process_composite_asset(
         show_labels=False,
         show_info=False,
         contacts="auto",
+        project=project,
+        in_dir=in_dir,
         out_dir=out_dir
     )
     composite_img = cv2.imread(composite_png)
@@ -1182,6 +1204,7 @@ def assemble_master_film(
 # ─────────────────────────────────────────────────────────────────────────────
 
 def assemble_art_film(
+    project: str = None,
     in_dir: str = "010_in",
     out_dir: str = "040_out",
     output_path: str = "040_out/full_eclipse.mp4",
@@ -1254,7 +1277,15 @@ def assemble_art_film(
     comp_regenerated = False
     if not os.path.exists(art_comp_png) or force_all or force_prep or prep_newer:
         print(f"Generating 4K Ultra-HD Composite Canvas for Camera Dives ({comp_layout})...")
-        cec.build_composite(layout=comp_layout, width=3840, height=2160, out_dir=out_dir, output_path=art_comp_png)
+        cec.build_composite(
+            layout=comp_layout,
+            width=3840,
+            height=2160,
+            project=project,
+            in_dir=in_dir,
+            out_dir=out_dir,
+            output_path=art_comp_png
+        )
         comp_regenerated = True
 
     # Read composite metadata for sample endpoints
@@ -1554,10 +1585,11 @@ def assemble_art_film(
 # ─────────────────────────────────────────────────────────────────────────────
 
 def run_coc_pipeline(
-    in_dir="010_in",
-    out_dir="040_out",
+    project=None,
+    in_dir=None,
+    out_dir=None,
     output_film=None,
-    film_style="standard",
+    film_style=None,
     transition_type="fade_to_black",
     freeze_before=1.0,
     fade_out=0.5,
@@ -1576,14 +1608,22 @@ def run_coc_pipeline(
     no_music=False,
     music_mode="arrange"
 ):
-    os.makedirs(out_dir, exist_ok=True)
     repo_root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+    from project_manager import resolve_project
+    proj = resolve_project(project_arg=project, repo_root=repo_root, in_base=in_dir or "010_in", out_base=out_dir or "040_out")
+    in_dir = proj["in_dir"]
+    out_dir = proj["out_dir"]
+    is_project_preprocessed = proj["is_preprocessed"]
+    if film_style is None:
+        film_style = proj["film_style"]
+
+    os.makedirs(out_dir, exist_ok=True)
 
     if output_film is None:
         output_film = os.path.join(out_dir, f"full_eclipse_{film_style}_video.mp4")
 
     # Discover and separate visual assets from audio
-    visual_assets, music_asset = discover_coc_assets(in_dir)
+    visual_assets, music_asset = discover_coc_assets(in_dir, is_project_preprocessed=is_project_preprocessed)
     if not visual_assets:
         print(f"[ERROR] No valid CoC assets found in '{in_dir}'!")
         return
@@ -1593,6 +1633,7 @@ def run_coc_pipeline(
     print("=" * 65)
     print("ECLIPSE ASSEMBLER: CONVENTION-OVER-CONFIGURATION MASTER PIPELINE")
     print("=" * 65)
+    print(f"  Project            : {proj['name']}")
     print(f"  Film Assembly Style: {film_style.upper()}")
     print(f"  Input Directory    : {in_dir}")
     print(f"  Output Directory   : {out_dir}")
@@ -1712,6 +1753,8 @@ def run_coc_pipeline(
             process_composite_asset(
                 asset_meta=a,
                 out_path=out_clip_path,
+                project=proj['name'],
+                in_dir=in_dir,
                 out_dir=out_dir,
                 master_w=master_w,
                 master_h=master_h,
@@ -1743,6 +1786,7 @@ def run_coc_pipeline(
     # 3. Assemble master film based on film_style
     if film_style.lower() == "art":
         assemble_art_film(
+            project=proj['name'],
             in_dir=in_dir,
             out_dir=out_dir,
             output_path=output_film,
@@ -1795,6 +1839,7 @@ def run_coc_pipeline(
             include_title=not no_title,
             title_duration=title_duration,
             force_db=force_db,
+            project=proj['name'],
             in_dir=in_dir,
             out_dir=out_dir,
             film_style=film_style
@@ -1835,14 +1880,16 @@ def run_coc_pipeline(
 
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(description="CoC Automated Solar Eclipse Processing & Master Film Assembly Pipeline")
-    parser.add_argument("--film-style", type=str, choices=["standard", "art"], default="standard",
-                        help="Film assembly style: 'standard' (linear sequence) or 'art' (camera dive & narrative montage). Default: standard")
-    parser.add_argument("--in-dir", "-i", type=str, default="010_in",
+    parser.add_argument("--project", "-p", type=str, default=None,
+                        help="Project folder name in 010_in/ (default: most recently modified)")
+    parser.add_argument("--film-style", type=str, choices=["standard", "art"], default=None,
+                        help="Film assembly style: 'standard' (linear sequence) or 'art' (camera dive & narrative montage). Default: deduced from project")
+    parser.add_argument("--in-dir", "-i", type=str, default=None,
                         help="Input directory with CoC named assets (default: 010_in)")
-    parser.add_argument("--out-dir", type=str, default="040_out",
+    parser.add_argument("--out-dir", type=str, default=None,
                         help="Intermediate and master output directory (default: 040_out)")
     parser.add_argument("--output", "-o", type=str, default=None,
-                        help="Path to final master clean video (default: 040_out/full_eclipse_<film_style>_video.mp4)")
+                        help="Path to final master clean video (default: 040_out/<project>/full_eclipse_<film_style>_video.mp4)")
     parser.add_argument("--transition-type", type=str, choices=["fade_to_black", "hard", "crossfade"], default="fade_to_black",
                         help="Transition style: 'fade_to_black', 'hard', or 'crossfade'. Default: fade_to_black")
     parser.add_argument("--freeze-before", type=float, default=1.0,
@@ -1880,6 +1927,7 @@ if __name__ == "__main__":
     args = parser.parse_args()
 
     run_coc_pipeline(
+        project=args.project,
         in_dir=args.in_dir,
         out_dir=args.out_dir,
         output_film=args.output,

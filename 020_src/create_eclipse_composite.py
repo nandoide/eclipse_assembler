@@ -298,6 +298,8 @@ def detect_clip_telemetry(clip_path, raw_dir="000_raw"):
 
 def sample_eclipse_sequence(
     out_dir="040_out",
+    in_dir=None,
+    project=None,
     crop_size=1280,
     clock_offset_s=0.0,
     date_str=None,
@@ -312,24 +314,16 @@ def sample_eclipse_sequence(
       - 03_video_realtime (totality): symmetric keyframes (beads, chromosphere, corona).
       - 04_timelapse (egress): partial crescents.
     """
-    resolved = resolve_output_dir(out_dir)
-
     repo_root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
-    in_dir = os.path.join(repo_root, "010_in")
+    from project_manager import resolve_project
+    proj = resolve_project(project_arg=project, repo_root=repo_root, in_base=in_dir or "010_in", out_base=out_dir)
+    in_dir = proj["in_dir"]
+    resolved = proj["out_dir"]
+    is_prep_mode = proj["is_preprocessed"]
+
     prep_dir = os.path.join(repo_root, "005_raw_preprocessed")
 
-    # Detect if preprocessed mode is active in 010_in (or 005_raw_preprocessed has files)
-    is_prep_mode = False
-    if os.path.exists(in_dir):
-        for fn in os.listdir(in_dir):
-            if "prep" in fn.lower() and "timelapse" in fn.lower():
-                is_prep_mode = True
-                break
-    if not is_prep_mode and os.path.exists(prep_dir):
-        if any(f.endswith(".mp4") and "_TL_" in f for f in os.listdir(prep_dir)):
-            is_prep_mode = True
-
-    # Check if 02_video_slowdown exists in 010_in
+    # Check if 02_video_slowdown exists in in_dir
     has_in_pre_tot = False
     if os.path.exists(in_dir):
         has_in_pre_tot = any(
@@ -1424,10 +1418,16 @@ def build_composite(
     lon_deg=-7.558333,
     alt_m=438.7,
     num_samples=None,
+    project=None,
+    in_dir=None,
     out_dir="040_out",
     output_path=None,
 ):
-    resolved_out = resolve_output_dir(out_dir)
+    repo_root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+    from project_manager import resolve_project
+    proj = resolve_project(project_arg=project, repo_root=repo_root, in_base=in_dir or "010_in", out_base=out_dir)
+    in_dir = proj["in_dir"]
+    resolved_out = proj["out_dir"]
     os.makedirs(resolved_out, exist_ok=True)
 
     target_num_samples = num_samples if num_samples is not None else (20 if layout in ["spiral", "espiral", "helix"] else 14)
@@ -1435,6 +1435,7 @@ def build_composite(
     print("=" * 65)
     print(f"ECLIPSE COMPOSITE GENERATOR ({width}x{height})")
     print("=" * 65)
+    print(f"  Project           : {proj['name']}")
     print(f"  Layout Mode       : {layout.upper()}")
     print(f"  Resolution        : {width}x{height} px")
     print(f"  Target Frames     : {target_num_samples}")
@@ -1447,6 +1448,8 @@ def build_composite(
 
     samples = sample_eclipse_sequence(
         out_dir=resolved_out,
+        in_dir=in_dir,
+        project=project,
         crop_size=1280,
         clock_offset_s=clock_offset_s,
         date_str=date_str,
@@ -1588,6 +1591,7 @@ def build_composite(
     alt_str = f"ALT: {alt_m:.1f} M" if alt_m % 1 != 0 else f"ALT: {int(alt_m)} M"
 
     meta_data = {
+        "project": proj["name"],
         "layout": layout,
         "width": width,
         "height": height,
@@ -1648,6 +1652,12 @@ if __name__ == "__main__":
     parser = argparse.ArgumentParser(
         description="Generate UHD & custom aspect-ratio solar eclipse composite artwork."
     )
+    parser.add_argument("--project", "-p", type=str, default=None,
+                        help="Project folder name in 010_in/ (default: most recently modified)")
+    parser.add_argument("--in-dir", type=str, default=None,
+                        help="Base input directory (default: 010_in)")
+    parser.add_argument("--out-dir", type=str, default="040_out",
+                        help="Base output directory (default: 040_out)")
     parser.add_argument("--layout", "-l", type=str,
                         choices=["sinusoid", "s-curve", "vertical", "vertical-s", "mobile", "circle", "ring", "ellipse", "oval", "diagonal", "horizontal", "arc", "spiral", "espiral", "all"],
                         default="sinusoid",
@@ -1732,6 +1742,8 @@ if __name__ == "__main__":
             lon_deg=args.lon,
             alt_m=args.alt,
             num_samples=args.frames,
-            out_dir="040_out",
+            project=args.project,
+            in_dir=args.in_dir,
+            out_dir=args.out_dir,
             output_path=args.output if args.layout != "all" else None,
         )

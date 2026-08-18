@@ -179,7 +179,8 @@ def get_composite_time_range(out_dir: str = "040_out", date_str: str = None) -> 
 # ─────────────────────────────────────────────────────────────────────────────
 
 def build_timeline_mapping(
-    in_dir: str = "010_in",
+    project: str = None,
+    in_dir: str = None,
     out_dir: str = "040_out",
     date_str: str = None,
     include_title: bool = True,
@@ -190,7 +191,7 @@ def build_timeline_mapping(
     black_duration: float = 0.0,
     fade_in: float = 0.5,
     freeze_after: float = 1.0,
-    film_style: str = "standard"
+    film_style: str = None
 ):
     """
     Builds a timeline model mapping every millisecond of the assembled film
@@ -198,11 +199,16 @@ def build_timeline_mapping(
     All timestamps come directly from 000_raw/ telescope footage.
     Supports film_style="standard" (linear) and film_style="art" (narrative zoom dive).
     """
-    resolved_date = date_str or eedb.detect_eclipse_date(raw_dir="000_raw", in_dir=in_dir)
-    dt_base = datetime.datetime.strptime(resolved_date, "%Y-%m-%d")
-
     repo_root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
-    in_dir_abs = in_dir if os.path.isabs(in_dir) else os.path.join(repo_root, in_dir)
+    from project_manager import resolve_project
+    proj = resolve_project(project_arg=project, repo_root=repo_root, in_base=in_dir or "010_in", out_base=out_dir)
+    in_dir_abs = proj["in_dir"]
+    out_dir = proj["out_dir"]
+    if film_style is None:
+        film_style = proj["film_style"]
+
+    resolved_date = date_str or eedb.detect_eclipse_date(raw_dir="000_raw", in_dir=in_dir_abs)
+    dt_base = datetime.datetime.strptime(resolved_date, "%Y-%m-%d")
 
     # Auto-detect telemetry and initial trim offsets against raw footage:
     p_ing_cand = None
@@ -1300,14 +1306,23 @@ def generate_eclipse_subtitles_pipeline(
     include_title: bool = True,
     title_duration: float = 5.0,
     force_db: bool = False,
-    in_dir: str = "010_in",
+    project: str = None,
+    in_dir: str = None,
     out_dir: str = "040_out",
-    film_style: str = "standard"
+    film_style: str = None
 ):
     """
     Main entry point to generate localized astronomical subtitles (EN and ES)
     purely from ground-truth raw telescope recordings.
     """
+    repo_root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+    from project_manager import resolve_project
+    proj = resolve_project(project_arg=project, repo_root=repo_root, in_base=in_dir or "010_in", out_base=out_dir)
+    in_dir = proj["in_dir"]
+    out_dir = proj["out_dir"]
+    if film_style is None:
+        film_style = proj["film_style"]
+
     if video_path is None:
         video_path = os.path.join(out_dir, f"full_eclipse_{film_style}_video.mp4")
     if output_srt_path is None:
@@ -1316,6 +1331,7 @@ def generate_eclipse_subtitles_pipeline(
     print("=================================================================")
     print("ASTRONOMICAL ECLIPSE MULTILINGUAL SUBTITLE GENERATOR (.SRT)")
     print("=================================================================")
+    print(f"  Project        : {proj['name']}")
     print(f"  Film Style     : {film_style.upper()}")
     print(f"  Master Video   : {video_path}")
     print(f"  Output SRT     : {output_srt_path}")
@@ -1489,12 +1505,14 @@ def main():
                         help="Disable title card in timeline mapping calculation")
     parser.add_argument("--force-db", action="store_true",
                         help="Force rebuild of astronomical database from NASA JPL Horizons")
-    parser.add_argument("--in-dir", type=str, default="010_in",
+    parser.add_argument("--project", "-p", type=str, default=None,
+                        help="Project folder name in 010_in/ (default: most recently modified)")
+    parser.add_argument("--in-dir", type=str, default=None,
                         help="Path to input clips directory (default: 010_in)")
     parser.add_argument("--out-dir", type=str, default="040_out",
                         help="Path to output directory (default: 040_out)")
-    parser.add_argument("--film-style", type=str, choices=["standard", "art"], default="standard",
-                        help="Film assembly style: 'standard' or 'art' (default: standard)")
+    parser.add_argument("--film-style", type=str, choices=["standard", "art"], default=None,
+                        help="Film assembly style: 'standard' or 'art' (default: deduced from project)")
 
     args = parser.parse_args()
 
@@ -1512,6 +1530,7 @@ def main():
         date_str=args.date,
         include_title=not args.no_title,
         force_db=args.force_db,
+        project=args.project,
         in_dir=args.in_dir,
         out_dir=args.out_dir,
         film_style=args.film_style
