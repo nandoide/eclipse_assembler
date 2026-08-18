@@ -232,7 +232,7 @@ def build_timeline_mapping(
             if not p_ing_cand or "prep" in str(p_ing_cand).lower():
                 p_ing_cand = os.path.join(prep_dir_abs, prep_files[0])
             if len(prep_files) > 1 and (not p_egr_cand or "prep" in str(p_egr_cand).lower()):
-                p_egr_cand = os.path.join(prep_dir_abs, prep_files[1])
+                p_egr_cand = os.path.join(prep_dir_abs, prep_files[-1])
 
     tel_ing = detect_clip_telemetry(p_ing_cand) if p_ing_cand else None
     tel_pre = detect_clip_telemetry(p_pre_cand) if p_pre_cand else None

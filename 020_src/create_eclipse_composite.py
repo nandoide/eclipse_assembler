@@ -346,7 +346,7 @@ def sample_eclipse_sequence(
                             return os.path.join(prep_dir, prep_files[0])
                     elif "04" in p or "egress" in p:
                         if len(prep_files) > 1:
-                            return os.path.join(prep_dir, prep_files[1])
+                            return os.path.join(prep_dir, prep_files[-1])
                         elif prep_files:
                             return os.path.join(prep_dir, prep_files[0])
 
