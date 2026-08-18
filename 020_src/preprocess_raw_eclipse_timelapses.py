@@ -119,24 +119,15 @@ def run_master_preprocessing_pipeline(
     ingress_out_path = os.path.join(preprocessed_dir, actual_ingress_filename)
     egress_out_path = os.path.join(preprocessed_dir, actual_egress_filename)
 
-    # Clean up legacy preprocessed files if names changed
-    if actual_ingress_filename != ingress_filename:
-        old_ingress_path = os.path.join(preprocessed_dir, ingress_filename)
-        if os.path.exists(old_ingress_path):
-            try:
-                os.remove(old_ingress_path)
-                print(f"  • Removed outdated preprocessed ingress file: {ingress_filename}")
-            except OSError:
-                pass
-
-    if actual_egress_filename != egress_filename:
-        old_egress_path = os.path.join(preprocessed_dir, egress_filename)
-        if os.path.exists(old_egress_path):
-            try:
-                os.remove(old_egress_path)
-                print(f"  • Removed outdated preprocessed egress file: {egress_filename}")
-            except OSError:
-                pass
+    # Clean up legacy / outdated preprocessed files
+    if os.path.exists(preprocessed_dir):
+        for f in os.listdir(preprocessed_dir):
+            if f.endswith(".mp4") and "_TL_" in f and f not in [actual_ingress_filename, actual_egress_filename]:
+                try:
+                    os.remove(os.path.join(preprocessed_dir, f))
+                    print(f"  • Removed outdated preprocessed file: {f}")
+                except OSError:
+                    pass
 
     ingress_comp_path = os.path.join(out_dir, "restored_comparison_ingress.mp4")
     egress_comp_path = os.path.join(out_dir, "restored_comparison_egress.mp4")
