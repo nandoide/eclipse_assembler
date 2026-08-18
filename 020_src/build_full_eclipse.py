@@ -1421,7 +1421,13 @@ def assemble_art_film(
 
     sequence.append({"path": dive_in_path, "trans_after": "hard"})
     sequence.append({"path": art_tl_in_path, "trans_after": "fade_to_black"})
-    sequence.append({"path": slow_path, "trans_after": "fade_to_black"})
+
+    has_slow = any(
+        f.startswith("02_") or "slowdown" in f.lower() for f in os.listdir(in_dir) if not f.startswith(".")
+    ) if os.path.exists(in_dir) else False
+    if has_slow and os.path.exists(slow_path):
+        sequence.append({"path": slow_path, "trans_after": "fade_to_black"})
+
     sequence.append({"path": tot_p1_path, "trans_after": "crossfade", "cross_duration": 0.8})
     sequence.append({"path": tot_hdr_path, "trans_after": "crossfade", "cross_duration": 0.8})
     sequence.append({"path": tot_p2_path, "trans_after": "fade_to_black"})

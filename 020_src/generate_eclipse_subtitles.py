@@ -373,40 +373,43 @@ def build_timeline_mapping(
         })
         current_time = trans_end
 
-        # 4. Video Slowdown (02_video_slowdown_10.mp4)
-        p_slow = os.path.join(out_dir, "02_video_slowdown_10.mp4")
-        slow_dur = 10.0
-        if os.path.exists(p_slow):
-            slow_dur = get_video_info(p_slow)['duration']
-        slow_real_span = (dt_pre_tot_end - dt_pre_tot_start).total_seconds()
-        segments.append({
-            "type": "video_slowdown",
-            "filename": "02_video_slowdown_10.mp4",
-            "start": current_time,
-            "end": current_time + slow_dur,
-            "duration": slow_dur,
-            "speed_factor": slow_real_span / max(slow_dur, 0.1),
-            "c2_time": None,
-            "c3_time": None,
-            "dt_start": dt_pre_tot_start,
-            "dt_end": dt_pre_tot_end
-        })
-        current_time += slow_dur
+        # 4. Video Slowdown (02_video_slowdown_10.mp4) - only if in 010_in
+        has_in_slow = any(
+            f.startswith("02_") or "slowdown" in f.lower() for f in os.listdir(in_dir_abs) if not f.startswith(".")
+        ) if os.path.exists(in_dir_abs) else False
 
-        # Transition after slowdown (fade_to_black)
-        trans_start = current_time
-        trans_end = current_time + trans_dur
-        segments.append({
-            "type": "transition",
-            "filename": "transition_slow",
-            "start": trans_start,
-            "end": trans_end,
-            "prev_type": "video_slowdown",
-            "speed_factor": slow_real_span / max(slow_dur, 0.1),
-            "dt_start": dt_pre_tot_end,
-            "dt_end": dt_pre_tot_end
-        })
-        current_time = trans_end
+        p_slow = os.path.join(out_dir, "02_video_slowdown_10.mp4")
+        if has_in_slow and os.path.exists(p_slow):
+            slow_dur = get_video_info(p_slow)['duration']
+            slow_real_span = (dt_pre_tot_end - dt_pre_tot_start).total_seconds()
+            segments.append({
+                "type": "video_slowdown",
+                "filename": "02_video_slowdown_10.mp4",
+                "start": current_time,
+                "end": current_time + slow_dur,
+                "duration": slow_dur,
+                "speed_factor": slow_real_span / max(slow_dur, 0.1),
+                "c2_time": None,
+                "c3_time": None,
+                "dt_start": dt_pre_tot_start,
+                "dt_end": dt_pre_tot_end
+            })
+            current_time += slow_dur
+
+            # Transition after slowdown (fade_to_black)
+            trans_start = current_time
+            trans_end = current_time + trans_dur
+            segments.append({
+                "type": "transition",
+                "filename": "transition_slow",
+                "start": trans_start,
+                "end": trans_end,
+                "prev_type": "video_slowdown",
+                "speed_factor": slow_real_span / max(slow_dur, 0.1),
+                "dt_start": dt_pre_tot_end,
+                "dt_end": dt_pre_tot_end
+            })
+            current_time = trans_end
 
         # 5. Video Realtime Part 1 (art_03_totality_p1.mp4)
         p_tot_p1 = os.path.join(out_dir, "art_03_totality_p1.mp4")
