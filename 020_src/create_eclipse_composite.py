@@ -39,6 +39,7 @@ import argparse
 import json
 import datetime
 import math
+import re
 import cv2
 import numpy as np
 from PIL import Image, ImageDraw, ImageFont
@@ -147,14 +148,113 @@ def resolve_output_dir(out_dir):
     return os.path.join(repo_root, out_dir)
 
 
-# ─────────────────────────────────────────────────────────────────────────────
-# SEQUENCE SAMPLER & TIMESTAMP TAGGER
-# ─────────────────────────────────────────────────────────────────────────────
+_TELEMETRY_CACHE = {}
+
+def detect_clip_telemetry(clip_path, raw_dir="000_raw"):
+    """
+    Detects the exact physical start datetime and trim offset for a clip in 010_in/
+    by optically matching its first frame against the raw files in 000_raw/.
+    """
+    if not clip_path or not os.path.exists(clip_path):
+        return None
+
+    repo_root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+    in_dir = os.path.join(repo_root, "010_in")
+    basename = os.path.basename(clip_path)
+    in_candidate = os.path.join(in_dir, basename)
+    match_source = in_candidate if os.path.exists(in_candidate) else clip_path
+
+    if match_source in _TELEMETRY_CACHE:
+        return _TELEMETRY_CACHE[match_source]
+
+    cap_in = cv2.VideoCapture(match_source)
+    ret_in, f_in = cap_in.read()
+    n_in = int(cap_in.get(cv2.CAP_PROP_FRAME_COUNT))
+    fps_in = cap_in.get(cv2.CAP_PROP_FPS) or 30.0
+    cap_in.release()
+    if not ret_in or n_in <= 0:
+        return None
+
+    # Parse interval from filename (e.g. _i10 -> 10.0s)
+    m_i = re.search(r"_i(\d+)", basename)
+    interval_s = float(m_i.group(1)) if m_i else None
+    is_tl = interval_s is not None
+
+    resolved_raw = raw_dir if os.path.isabs(raw_dir) else os.path.join(repo_root, raw_dir)
+    if not os.path.exists(resolved_raw):
+        return None
+
+    raw_files = [os.path.join(resolved_raw, f) for f in os.listdir(resolved_raw) if f.endswith((".mp4", ".mov"))]
+    candidates = [rf for rf in raw_files if is_tl == ("_TL_" in os.path.basename(rf))]
+
+    best_diff = float("inf")
+    best_raw = None
+    best_k = 0
+
+    if is_tl:
+        thumb_w, thumb_h = 128, 72
+        thumb_in = cv2.resize(f_in, (thumb_w, thumb_h)).astype(np.float32)
+
+        for rf in candidates:
+            cap_r = cv2.VideoCapture(rf)
+            n_r = int(cap_r.get(cv2.CAP_PROP_FRAME_COUNT))
+            for k in range(n_r):
+                ret_r, f_r = cap_r.read()
+                if not ret_r:
+                    break
+                thumb_r = cv2.resize(f_r, (thumb_w, thumb_h)).astype(np.float32)
+                diff = np.mean(np.abs(thumb_r - thumb_in))
+                if diff < best_diff:
+                    best_diff = diff
+                    best_raw = rf
+                    best_k = k
+                    if diff == 0.0:
+                        break
+            cap_r.release()
+            if best_diff == 0.0:
+                break
+    else:
+        for rf in candidates:
+            best_raw = rf
+            best_k = 0
+            best_diff = 0.0
+            break
+
+    if best_raw is None or best_diff > 30.0:
+        return None
+
+    m = re.search(r"(\d{4})-(\d{2})-(\d{2})-(\d{2})-(\d{2})-(\d{2})-(\d{3})", os.path.basename(best_raw))
+    if not m:
+        return None
+    y, mo, d, h, mi, s, ms = map(int, m.groups())
+    dt_raw = datetime.datetime(y, mo, d, h, mi, s, ms * 1000)
+
+    if is_tl:
+        dt_start = dt_raw + datetime.timedelta(seconds=best_k * interval_s)
+        dt_end = dt_start + datetime.timedelta(seconds=(n_in - 1) * interval_s)
+    else:
+        dt_start = dt_raw
+        dt_end = dt_start + datetime.timedelta(seconds=n_in / fps_in)
+
+    res = {
+        "clip": basename,
+        "source_path": match_source,
+        "raw_file": os.path.basename(best_raw),
+        "trim_frames": best_k,
+        "is_timelapse": is_tl,
+        "interval_s": interval_s or (1.0 / fps_in),
+        "dt_start": dt_start,
+        "dt_end": dt_end,
+        "diff": best_diff
+    }
+    _TELEMETRY_CACHE[match_source] = res
+    return res
+
 
 def sample_eclipse_sequence(
     out_dir="040_out",
     crop_size=1280,
-    clock_offset_s=44.3,
+    clock_offset_s=0.0,
     date_str=None,
     force_db=False,
     num_samples=14
@@ -172,7 +272,7 @@ def sample_eclipse_sequence(
     def find_file(prefix_or_patterns):
         repo_root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
         in_dir = os.path.join(repo_root, "010_in")
-        search_dirs = [resolved, in_dir]
+        search_dirs = [in_dir, resolved]
 
         patterns = prefix_or_patterns if isinstance(prefix_or_patterns, list) else [prefix_or_patterns]
         for sdir in search_dirs:
@@ -218,23 +318,45 @@ def sample_eclipse_sequence(
     dt_base = datetime.datetime.strptime(eph["date"], "%Y-%m-%d")
 
     delta_offset = datetime.timedelta(seconds=clock_offset_s)
-    dt_ingress_start = datetime.datetime(dt_base.year, dt_base.month, dt_base.day, 19, 35, 13) + delta_offset
-    dt_ingress_end   = datetime.datetime(dt_base.year, dt_base.month, dt_base.day, 20, 20, 17) + delta_offset
 
-    dt_pre_tot_start = datetime.datetime(dt_base.year, dt_base.month, dt_base.day, 20, 20, 36) + delta_offset
-    dt_pre_tot_end   = datetime.datetime(dt_base.year, dt_base.month, dt_base.day, 20, 26, 47) + delta_offset
+    # Auto-detect telemetry and initial trim offsets against raw footage
+    tel_ingress = detect_clip_telemetry(paths["ingress"])
+    tel_pre_tot = detect_clip_telemetry(paths["pre_tot"])
+    tel_egress  = detect_clip_telemetry(paths["egress"])
+
+    if tel_ingress:
+        dt_ingress_start = tel_ingress["dt_start"] + delta_offset
+        dt_ingress_end   = tel_ingress["dt_end"] + delta_offset
+        interval_ing     = tel_ingress["interval_s"]
+    else:
+        dt_ingress_start = datetime.datetime(dt_base.year, dt_base.month, dt_base.day, 19, 35, 13) + delta_offset
+        dt_ingress_end   = datetime.datetime(dt_base.year, dt_base.month, dt_base.day, 20, 20, 17) + delta_offset
+        interval_ing     = 10.0
+
+    if tel_pre_tot:
+        dt_pre_tot_start = tel_pre_tot["dt_start"] + delta_offset
+        dt_pre_tot_end   = tel_pre_tot["dt_end"] + delta_offset
+    else:
+        dt_pre_tot_start = datetime.datetime(dt_base.year, dt_base.month, dt_base.day, 20, 20, 36) + delta_offset
+        dt_pre_tot_end   = datetime.datetime(dt_base.year, dt_base.month, dt_base.day, 20, 26, 47) + delta_offset
 
     dt_totality_start = datetime.datetime(dt_base.year, dt_base.month, dt_base.day, 20, 27, 31, 588000)
     dt_totality_end   = datetime.datetime(dt_base.year, dt_base.month, dt_base.day, 20, 29, 18, 921000)
 
-    dt_egress_start = datetime.datetime(dt_base.year, dt_base.month, dt_base.day, 20, 35, 24) + delta_offset
-    dt_egress_end   = datetime.datetime(dt_base.year, dt_base.month, dt_base.day, 21, 16, 44) + delta_offset
+    if tel_egress:
+        dt_egress_start = tel_egress["dt_start"] + delta_offset
+        dt_egress_end   = tel_egress["dt_end"] + delta_offset
+        interval_egr    = tel_egress["interval_s"]
+    else:
+        dt_egress_start = datetime.datetime(dt_base.year, dt_base.month, dt_base.day, 20, 35, 24) + delta_offset
+        dt_egress_end   = datetime.datetime(dt_base.year, dt_base.month, dt_base.day, 21, 16, 44) + delta_offset
+        interval_egr    = 10.0
 
     samples = []
 
     # Configure dynamic sampling distribution based on num_samples
     if num_samples == 20:
-        fracs_ingress = [0.18, 0.38, 0.58, 0.78]
+        fracs_ingress = [0.0, 0.28, 0.55, 0.82]
         fracs_pre_tot = [0.25, 0.55, 0.85]
         tot_key_moments = [
             (3.45,   "ingress_beads"),        # C2 -> 20:27:35 CEST
@@ -247,8 +369,8 @@ def sample_eclipse_sequence(
         ]
         fracs_egress = [0.10, 0.25, 0.40, 0.55, 0.70, 0.85]
     elif num_samples == 14:
-        fracs_ingress = [0.06, 0.62]
-        fracs_pre_tot = [0.38, 0.78]
+        fracs_ingress = [0.0, 0.58]
+        fracs_pre_tot = [0.28, 0.78]
         tot_key_moments = [
             (3.45,   "ingress_beads"),        # C2 -> 20:27:35 CEST
             (10.00,  "ingress_chromosphere"), # 20:27:41 CEST
@@ -280,7 +402,7 @@ def sample_eclipse_sequence(
         n_ing = max(1, int(round(n_rem * 0.28)))
         n_pre = max(1, int(round(n_rem * 0.22)))
         n_egr = max(1, n_rem - n_ing - n_pre)
-        fracs_ingress = np.linspace(0.15, 0.85, n_ing).tolist()
+        fracs_ingress = np.linspace(0.0, 0.85, n_ing).tolist()
         fracs_pre_tot = np.linspace(0.20, 0.85, n_pre).tolist()
         fracs_egress = np.linspace(0.10, 0.88, n_egr).tolist()
 
@@ -289,7 +411,7 @@ def sample_eclipse_sequence(
         single_key = list(caps.keys())[0]
         cap = caps[single_key]
         total = counts[single_key]
-        for frac in np.linspace(0.05, 0.95, num_samples):
+        for frac in np.linspace(0.0, 0.95, num_samples):
             f_idx = int(frac * (total - 1))
             f = read_at(cap, f_idx, total)
             if f is not None:
@@ -311,11 +433,11 @@ def sample_eclipse_sequence(
     # 1. Ingress Partials
     if "ingress" in caps and counts["ingress"] > 0:
         for frac in fracs_ingress:
-            f_idx = int(frac * (counts["ingress"] - 1))
+            f_idx = int(round(frac * (counts["ingress"] - 1)))
             f = read_at(caps["ingress"], f_idx, counts["ingress"])
             if f is not None:
                 f = equalize_solar_color(f)
-                dt_sample = dt_ingress_start + frac * (dt_ingress_end - dt_ingress_start)
+                dt_sample = dt_ingress_start + datetime.timedelta(seconds=f_idx * interval_ing)
                 samples.append({
                     "phase": "partial",
                     "label": "ingress",
@@ -329,12 +451,22 @@ def sample_eclipse_sequence(
 
     # 2. Pre-Totality Thin Crescents
     if "pre_tot" in caps and counts["pre_tot"] > 0:
+        fps_pre = caps["pre_tot"].get(cv2.CAP_PROP_FPS) or 29.8538
         for frac in fracs_pre_tot:
-            f_idx = int(frac * (counts["pre_tot"] - 1))
+            f_idx = int(round(frac * (counts["pre_tot"] - 1)))
             f = read_at(caps["pre_tot"], f_idx, counts["pre_tot"])
+            # Automatic dark-frame / underexposure fallback (e.g. camera re-exposure / filter change dip)
+            if f is not None and f.mean() < 1.0:
+                for step_off in [-150, 150, -300, 300, -600, 600, -1000, 1000]:
+                    cand_idx = max(0, min(counts["pre_tot"] - 1, f_idx + step_off))
+                    cand_f = read_at(caps["pre_tot"], cand_idx, counts["pre_tot"])
+                    if cand_f is not None and cand_f.mean() >= 1.0:
+                        f = cand_f
+                        f_idx = cand_idx
+                        break
             if f is not None:
                 f = equalize_solar_color(f)
-                dt_sample = dt_pre_tot_start + frac * (dt_pre_tot_end - dt_pre_tot_start)
+                dt_sample = dt_pre_tot_start + datetime.timedelta(seconds=f_idx / fps_pre)
                 samples.append({
                     "phase": "partial",
                     "label": "pre_totality",
@@ -369,11 +501,11 @@ def sample_eclipse_sequence(
     # 4. Egress Partials
     if "egress" in caps and counts["egress"] > 0:
         for frac in fracs_egress:
-            f_idx = int(frac * (counts["egress"] - 1))
+            f_idx = int(round(frac * (counts["egress"] - 1)))
             f = read_at(caps["egress"], f_idx, counts["egress"])
             if f is not None:
                 f = equalize_solar_color(f)
-                dt_sample = dt_egress_start + frac * (dt_egress_end - dt_egress_start)
+                dt_sample = dt_egress_start + datetime.timedelta(seconds=f_idx * interval_egr)
                 samples.append({
                     "phase": "partial",
                     "label": "egress",
@@ -1177,7 +1309,7 @@ def build_composite(
     disk_scale_factor=0.78,
     margin=None,
     amplitude=None,
-    clock_offset_s=44.3,
+    clock_offset_s=0.0,
     date_str=None,
     force_db=False,
     show_labels=False,
@@ -1431,8 +1563,8 @@ if __name__ == "__main__":
                         help="Circle orbit radius in pixels (default: auto)")
     parser.add_argument("--direction", type=str, default=None,
                         help="Progression direction (ccw/cw for circle/spiral; bottom_left_to_top_right for diagonal)")
-    parser.add_argument("--offset-seconds", type=float, default=44.3,
-                        help="Clock calibration offset in seconds (default: 44.3s)")
+    parser.add_argument("--offset-seconds", type=float, default=0.0,
+                        help="Clock calibration offset in seconds (default: 0.0s)")
     parser.add_argument("--date", "-d", type=str, default=None,
                         help="Eclipse date YYYY-MM-DD (default: auto-detect)")
     parser.add_argument("--force-db", action="store_true",

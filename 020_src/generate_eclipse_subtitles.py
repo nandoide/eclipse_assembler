@@ -37,6 +37,7 @@ import numpy as np
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 import eclipse_ephemeris_db as eedb
+from create_eclipse_composite import detect_clip_telemetry
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -200,13 +201,25 @@ def build_timeline_mapping(
     resolved_date = date_str or eedb.detect_eclipse_date(raw_dir="000_raw", in_dir=in_dir)
     dt_base = datetime.datetime.strptime(resolved_date, "%Y-%m-%d")
 
-    # Ground-truth camera timestamps from 000_raw/ recordings:
-    dt_ingress_start  = datetime.datetime(dt_base.year, dt_base.month, dt_base.day, 19, 35, 13)
-    dt_pre_tot_start  = datetime.datetime(dt_base.year, dt_base.month, dt_base.day, 20, 25, 36, 800000)
+    repo_root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+    in_dir_abs = in_dir if os.path.isabs(in_dir) else os.path.join(repo_root, in_dir)
+
+    # Auto-detect telemetry and initial trim offsets against raw footage:
+    tel_ing = detect_clip_telemetry(os.path.join(in_dir_abs, "01_timelapse_i10.mp4"))
+    tel_pre = detect_clip_telemetry(os.path.join(in_dir_abs, "02_video_slowdown_10.mp4"))
+    tel_eg  = detect_clip_telemetry(os.path.join(in_dir_abs, "04_timelapse_i10.mp4"))
+
+    dt_ingress_start  = tel_ing["dt_start"] if tel_ing else datetime.datetime(dt_base.year, dt_base.month, dt_base.day, 19, 35, 13)
+    dt_ingress_end    = tel_ing["dt_end"]   if tel_ing else datetime.datetime(dt_base.year, dt_base.month, dt_base.day, 20, 19, 33)
+
+    dt_pre_tot_start  = tel_pre["dt_start"] if tel_pre else datetime.datetime(dt_base.year, dt_base.month, dt_base.day, 20, 20, 36, 811000)
     dt_pre_tot_end    = datetime.datetime(dt_base.year, dt_base.month, dt_base.day, 20, 27, 31, 588000)
+
     dt_totality_start = datetime.datetime(dt_base.year, dt_base.month, dt_base.day, 20, 27, 31, 588000)
     dt_totality_end   = datetime.datetime(dt_base.year, dt_base.month, dt_base.day, 20, 29, 18, 921000)
-    dt_egress_start   = datetime.datetime(dt_base.year, dt_base.month, dt_base.day, 20, 32, 53)
+
+    dt_egress_start   = tel_eg["dt_start"] if tel_eg else datetime.datetime(dt_base.year, dt_base.month, dt_base.day, 20, 35, 23)
+    dt_egress_end     = tel_eg["dt_end"]   if tel_eg else datetime.datetime(dt_base.year, dt_base.month, dt_base.day, 21, 16, 23)
 
     trans_dur = freeze_before + fade_out + black_duration + fade_in + freeze_after
 
@@ -263,7 +276,7 @@ def build_timeline_mapping(
             "c2_time": None,
             "c3_time": None,
             "dt_start": dt_ingress_start,
-            "dt_end": dt_egress_start + datetime.timedelta(seconds=246 * 10.0)
+            "dt_end": dt_egress_end
         })
         current_time += dive_in_dur
 
@@ -304,8 +317,8 @@ def build_timeline_mapping(
             tl_in_dur = get_video_info(p_tl_in)['duration']
         
         dt_in_actual_start = dt_ingress_start + datetime.timedelta(seconds=in_start_frame * 10.0)
-        tl_in_span_s = max(1.0, (267 - in_start_frame) * 10.0)
-        dt_in_actual_end = dt_ingress_start + datetime.timedelta(seconds=267 * 10.0)
+        dt_in_actual_end = dt_ingress_end
+        tl_in_span_s = max(1.0, (dt_in_actual_end - dt_in_actual_start).total_seconds())
 
         segments.append({
             "type": "timelapse_ingress",
@@ -456,7 +469,7 @@ def build_timeline_mapping(
             tl_eg_dur = get_video_info(p_tl_eg)['duration']
         tl_eg_span_s = max(1.0, (eg_end_frame + 1) * 10.0)
         dt_eg_actual_start = dt_egress_start
-        dt_eg_actual_end = dt_egress_start + datetime.timedelta(seconds=tl_eg_span_s)
+        dt_eg_actual_end = dt_egress_end
 
         segments.append({
             "type": "timelapse_egress",
@@ -487,7 +500,7 @@ def build_timeline_mapping(
             "c2_time": None,
             "c3_time": None,
             "dt_start": dt_ingress_start,
-            "dt_end": dt_egress_start + datetime.timedelta(seconds=246 * 10.0)
+            "dt_end": dt_egress_end
         })
         current_time += dive_out_dur
 
@@ -501,8 +514,8 @@ def build_timeline_mapping(
             "end": trans_end,
             "prev_type": "composite",
             "speed_factor": 1.0,
-            "dt_start": dt_egress_start,
-            "dt_end": dt_egress_start
+            "dt_start": dt_egress_end,
+            "dt_end": dt_egress_end
         })
         current_time = trans_end
 
@@ -520,8 +533,8 @@ def build_timeline_mapping(
             "speed_factor": None,
             "c2_time": None,
             "c3_time": None,
-            "dt_start": dt_egress_start,
-            "dt_end": dt_egress_start
+            "dt_start": dt_egress_end,
+            "dt_end": dt_egress_end
         })
         current_time += end_dur
 
@@ -671,13 +684,16 @@ def build_timeline_mapping(
             real_span_s = cnt * tl_interval
             speed_factor = real_span_s / max(clip_dur, 0.1)
 
+            c_in_path = os.path.join(in_dir_abs, item['raw_name'])
+            c_tel = detect_clip_telemetry(c_in_path)
+
             if item['index'] <= 1:
-                seg_dt_start = dt_ingress_start
-                seg_dt_end = dt_ingress_start + datetime.timedelta(seconds=real_span_s)
+                seg_dt_start = c_tel["dt_start"] if c_tel else dt_ingress_start
+                seg_dt_end = c_tel["dt_end"] if c_tel else (dt_ingress_start + datetime.timedelta(seconds=real_span_s))
                 seg_type_name = "timelapse_ingress"
             else:
-                seg_dt_start = dt_egress_start
-                seg_dt_end = dt_egress_start + datetime.timedelta(seconds=real_span_s)
+                seg_dt_start = c_tel["dt_start"] if c_tel else dt_egress_start
+                seg_dt_end = c_tel["dt_end"] if c_tel else (dt_egress_start + datetime.timedelta(seconds=real_span_s))
                 seg_type_name = "timelapse_egress"
 
         elif ctype == "video_slowdown":
@@ -687,9 +703,9 @@ def build_timeline_mapping(
                 src_info = get_video_info(in_src_path)
                 src_dur = src_info['duration']
 
-            seg_dt_end = dt_totality_start
-            seg_dt_start = seg_dt_end - datetime.timedelta(seconds=src_dur)
-            real_span_s = src_dur
+            seg_dt_start = dt_pre_tot_start
+            seg_dt_end = dt_pre_tot_end
+            real_span_s = (seg_dt_end - seg_dt_start).total_seconds()
             speed_factor = real_span_s / max(clip_dur, 0.1)
             seg_type_name = "video_slowdown"
 
@@ -712,13 +728,13 @@ def build_timeline_mapping(
 
         elif ctype == "composite":
             seg_dt_start = dt_ingress_start
-            seg_dt_end = dt_egress_start + datetime.timedelta(seconds=246 * 10.0)
+            seg_dt_end = dt_egress_end
             speed_factor = None
             seg_type_name = "composite"
 
         elif ctype == "endtitles":
-            seg_dt_start = dt_egress_start + datetime.timedelta(seconds=246 * 10.0)
-            seg_dt_end = seg_dt_start
+            seg_dt_start = dt_egress_end
+            seg_dt_end = dt_egress_end
             speed_factor = None
             seg_type_name = "endtitles"
 
@@ -1036,6 +1052,7 @@ def embed_subtitles_for_quicktime(
         cmd.extend(["-i", srt_es, "-i", srt_en])
         cmd.extend([
             "-map", "0:v",
+            "-map", "0:a?",
             "-map_chapters", "1",
             "-map", "2:0",
             "-map", "3:0",
@@ -1044,12 +1061,14 @@ def embed_subtitles_for_quicktime(
         cmd.extend(["-i", srt_es, "-i", srt_en])
         cmd.extend([
             "-map", "0:v",
+            "-map", "0:a?",
             "-map", "1:0",
             "-map", "2:0",
         ])
 
     cmd.extend([
         "-c:v", "copy",
+        "-c:a", "copy",
         "-c:s", "mov_text",
         "-metadata:s:s:0", "language=spa",
         "-metadata:s:s:0", "title=Español (Hora Local)",
