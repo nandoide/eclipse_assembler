@@ -1138,14 +1138,21 @@ def generate_youtube_metadata(
     c2_time: float,
     c3_time: float,
     out_dir: str = "040_out",
+    temp_dir: str = None,
+    project_id: str = None,
     eph: dict = None,
     timezone: str = "CEST",
     film_style: str = "standard"
 ):
     """
-    Generates YouTube-compliant chapters (0:00 starting format) and full video description
-    exported to 040_out/youtube_chapters_<type>.txt and 040_out/youtube_description_<type>.txt.
+    Generates YouTube-compliant chapters (0:00 starting format) and full video description.
+    Chapters are saved to out_dir/<project_id>_chapters.txt.
+    Description is saved to temp_dir/youtube_description_<type>.txt.
     """
+    if temp_dir is None:
+        temp_dir = os.path.join(out_dir, "temp")
+    os.makedirs(temp_dir, exist_ok=True)
+
     chapters_bilingual = []
     chapters_es = []
     chapters_en = []
@@ -1243,7 +1250,7 @@ def generate_youtube_metadata(
         chapters_es.insert(0, (0.0, "0:00", "Presentación del Eclipse"))
         chapters_en.insert(0, (0.0, "0:00", "Eclipse Overview & Ephemeris"))
 
-    # Text content for youtube_chapters_<type>.txt
+    # Text content for chapters
     lines = []
     lines.append("Capítulos / Chapters:")
     for _, t, name in chapters_bilingual:
@@ -1257,7 +1264,8 @@ def generate_youtube_metadata(
     for _, t, name in chapters_en:
         lines.append(f"{t} - {name}")
 
-    chap_path = os.path.join(out_dir, f"youtube_chapters_{film_style}.txt")
+    chap_filename = f"{project_id}_chapters.txt" if project_id else f"youtube_chapters_{film_style}.txt"
+    chap_path = os.path.join(out_dir, chap_filename)
     with open(chap_path, "w", encoding="utf-8") as f:
         f.write("\n".join(lines) + "\n")
 
@@ -1283,7 +1291,7 @@ def generate_youtube_metadata(
     for _, t, name in chapters_bilingual:
         desc_lines.append(f"{t} - {name}")
 
-    desc_path = os.path.join(out_dir, f"youtube_description_{film_style}.txt")
+    desc_path = os.path.join(temp_dir, f"youtube_description_{film_style}.txt")
     with open(desc_path, "w", encoding="utf-8") as f:
         desc_write = "\n".join(desc_lines) + "\n"
         f.write(desc_write)
@@ -1320,18 +1328,28 @@ def generate_eclipse_subtitles_pipeline(
     proj = resolve_project(project_arg=project, repo_root=repo_root, in_base=in_dir or "010_in", out_base=out_dir)
     in_dir = proj["in_dir"]
     out_dir = proj["out_dir"]
+    temp_dir = proj["temp_dir"]
+    project_id = proj["project_id"]
     if film_style is None:
         film_style = proj["film_style"]
 
     if video_path is None:
-        video_path = os.path.join(out_dir, f"full_eclipse_{film_style}_video.mp4")
+        cand_temp = os.path.join(temp_dir, f"full_eclipse_{film_style}_video.mp4")
+        cand_out = os.path.join(out_dir, f"{project_id}.mp4")
+        if os.path.exists(cand_temp):
+            video_path = cand_temp
+        elif os.path.exists(cand_out):
+            video_path = cand_out
+        else:
+            video_path = cand_temp
+
     if output_srt_path is None:
-        output_srt_path = os.path.join(out_dir, f"full_eclipse_{film_style}.srt")
+        output_srt_path = os.path.join(temp_dir, f"full_eclipse_{film_style}.srt")
 
     print("=================================================================")
     print("ASTRONOMICAL ECLIPSE MULTILINGUAL SUBTITLE GENERATOR (.SRT)")
     print("=================================================================")
-    print(f"  Project        : {proj['name']}")
+    print(f"  Project        : {proj['name']} (ID: {project_id})")
     print(f"  Film Style     : {film_style.upper()}")
     print(f"  Master Video   : {video_path}")
     print(f"  Output SRT     : {output_srt_path}")
@@ -1365,18 +1383,19 @@ def generate_eclipse_subtitles_pipeline(
     print("=================================================================\n")
 
     # Get total film duration
-    v_info = get_video_info(video_path)
+    v_info = get_video_info(video_path) if os.path.exists(video_path) else {'duration': 180.0}
     total_film_dur = v_info['duration']
 
     # Build timeline model directly from raw recordings
-    has_title = include_title and (os.path.exists(os.path.join(out_dir, "00_title.mp4")) or include_title)
+    has_title = include_title and (os.path.exists(os.path.join(temp_dir, "00_title.mp4")) or os.path.exists(os.path.join(out_dir, "00_title.mp4")) or include_title)
     segments, model_dur = build_timeline_mapping(
         in_dir=in_dir,
         out_dir=out_dir,
         date_str=eph["date"],
         include_title=has_title,
         title_duration=title_duration,
-        film_style=film_style
+        film_style=film_style,
+        project=project
     )
 
     # Locate C2 and C3 optical contact points in film timeline
@@ -1392,11 +1411,10 @@ def generate_eclipse_subtitles_pipeline(
     print(f"    - C2 (Totality Start) : {c2_time:.2f}s ({format_srt_time(c2_time)}) -> 20:27:35 {timezone}")
     print(f"    - C3 (Totality End)   : {c3_time:.2f}s ({format_srt_time(c3_time)}) -> 20:29:12 {timezone}")
 
-    out_base, out_ext = os.path.splitext(output_srt_path)
     generated_files = []
 
-    path_en = f"{out_base}_en{out_ext}"
-    path_es = f"{out_base}_es{out_ext}"
+    path_en = os.path.join(out_dir, f"{project_id}_en.srt")
+    path_es = os.path.join(out_dir, f"{project_id}_es.srt")
 
     lang_mode = lang.lower().strip()
     if lang_mode in ["both", "all"]:
@@ -1437,6 +1455,8 @@ def generate_eclipse_subtitles_pipeline(
         c2_time=c2_time,
         c3_time=c3_time,
         out_dir=out_dir,
+        temp_dir=temp_dir,
+        project_id=project_id,
         eph=eph,
         timezone=timezone,
         film_style=film_style
@@ -1449,19 +1469,19 @@ def generate_eclipse_subtitles_pipeline(
     for _, t, name in yt_chaps:
         print(f"  {t} - {name}")
 
-    # Export FFmpeg chapter metadata for native MP4 / QuickTime embedding
-    meta_chap_p = os.path.join(out_dir, f"metadata_chapters_{film_style}.txt")
+    # Export FFmpeg chapter metadata for native MP4 / QuickTime embedding inside temp_dir
+    meta_chap_p = os.path.join(temp_dir, f"metadata_chapters_{film_style}.txt")
     export_ffmetadata_chapters(yt_chaps, total_film_dur, meta_chap_p)
 
     # Optional QuickTime MP4 embedding (Subtitles + Native Chapters)
     if embed and os.path.exists(path_es) and os.path.exists(path_en):
         if video_path.endswith("_video.mp4"):
-            subtitled_video_path = video_path[:-10] + ".mp4"
+            subtitled_video_path = os.path.join(out_dir, f"{project_id}.mp4")
         elif video_path.endswith("_subtitled.mp4"):
             subtitled_video_path = video_path
         else:
             v_base, v_ext = os.path.splitext(video_path)
-            subtitled_video_path = f"{v_base}_subtitled{v_ext}"
+            subtitled_video_path = os.path.join(out_dir, f"{project_id}.mp4")
 
         embed_subtitles_for_quicktime(
             video_path=video_path,

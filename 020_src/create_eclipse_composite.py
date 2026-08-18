@@ -319,9 +319,10 @@ def sample_eclipse_sequence(
     proj = resolve_project(project_arg=project, repo_root=repo_root, in_base=in_dir or "010_in", out_base=out_dir)
     in_dir = proj["in_dir"]
     resolved = proj["out_dir"]
+    temp_dir = proj["temp_dir"]
+    prep_dir = proj["prep_dir"]
+    raw_dir = proj["raw_dir"]
     is_prep_mode = proj["is_preprocessed"]
-
-    prep_dir = os.path.join(repo_root, "005_raw_preprocessed")
 
     # Check if 02_video_slowdown exists in in_dir
     has_in_pre_tot = False
@@ -335,7 +336,7 @@ def sample_eclipse_sequence(
     def find_file(prefix_or_patterns, is_timelapse=False, allow_fallback_dir=True):
         patterns = prefix_or_patterns if isinstance(prefix_or_patterns, list) else [prefix_or_patterns]
 
-        # In preprocessed mode: prioritize 005_raw_preprocessed/ for timelapses
+        # In preprocessed mode: prioritize prep_dir (e.g. 005_raw_preprocessed/solar26/) for timelapses
         if is_timelapse and is_prep_mode:
             if os.path.exists(prep_dir):
                 prep_files = sorted([f for f in os.listdir(prep_dir) if f.endswith(".mp4") and "_TL_" in f])
@@ -349,9 +350,9 @@ def sample_eclipse_sequence(
                         elif prep_files:
                             return os.path.join(prep_dir, prep_files[0])
 
-        search_dirs = [in_dir, prep_dir]
+        search_dirs = [in_dir, prep_dir, raw_dir]
         if allow_fallback_dir:
-            search_dirs.append(resolved)
+            search_dirs.extend([resolved, temp_dir])
 
         for sdir in search_dirs:
             if not os.path.exists(sdir):
@@ -1428,7 +1429,9 @@ def build_composite(
     proj = resolve_project(project_arg=project, repo_root=repo_root, in_base=in_dir or "010_in", out_base=out_dir)
     in_dir = proj["in_dir"]
     resolved_out = proj["out_dir"]
+    temp_dir = proj["temp_dir"]
     os.makedirs(resolved_out, exist_ok=True)
+    os.makedirs(temp_dir, exist_ok=True)
 
     target_num_samples = num_samples if num_samples is not None else (20 if layout in ["spiral", "espiral", "helix"] else 14)
 
@@ -1584,8 +1587,8 @@ def build_composite(
     jpg_out = os.path.splitext(final_out)[0] + ".jpg"
     cv2.imwrite(jpg_out, canvas, [cv2.IMWRITE_JPEG_QUALITY, 95])
 
-    # Save JSON metadata with exact frame timestamps and GPS info
-    meta_json_path = os.path.splitext(final_out)[0] + ".json"
+    # Save JSON metadata with exact frame timestamps and GPS info inside temp_dir
+    meta_json_path = os.path.join(temp_dir, f"{os.path.splitext(os.path.basename(final_out))[0]}.json")
     lat_str = f"{abs(lat_deg):.4f}° {'N' if lat_deg >= 0 else 'S'}"
     lon_str = f"{abs(lon_deg):.4f}° {'E' if lon_deg >= 0 else 'W'}"
     alt_str = f"ALT: {alt_m:.1f} M" if alt_m % 1 != 0 else f"ALT: {int(alt_m)} M"
@@ -1628,8 +1631,8 @@ def build_composite(
     with open(meta_json_path, "w", encoding="utf-8") as f:
         json.dump(meta_data, f, indent=2)
 
-    # Also save standard sample metadata in output dir
-    summary_json_path = os.path.join(resolved_out, "composite_samples.json")
+    # Also save standard sample metadata in temp dir
+    summary_json_path = os.path.join(temp_dir, "composite_samples.json")
     with open(summary_json_path, "w", encoding="utf-8") as f:
         json.dump(meta_data, f, indent=2)
 

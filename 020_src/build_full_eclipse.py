@@ -223,6 +223,8 @@ def discover_coc_assets(in_dir="010_in", is_project_preprocessed=False):
 def resolve_preprocessed_timelapse(
     asset_item,
     repo_root=None,
+    raw_dir=None,
+    prep_dir=None,
     force=False,
     extrapolate_c1=True,
     extrapolate_c2=True,
@@ -230,13 +232,17 @@ def resolve_preprocessed_timelapse(
     extrapolate_c4=True
 ):
     """
-    Resolves preprocessed restored timelapses from 005_raw_preprocessed/.
+    Resolves preprocessed restored timelapses from 005_raw_preprocessed/<observation>/.
     If missing or force is True, automatically runs preprocess_raw_eclipse_timelapses.py.
     """
     if repo_root is None:
         repo_root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
-    raw_dir = os.path.join(repo_root, "000_raw")
-    prep_dir = os.path.join(repo_root, "005_raw_preprocessed")
+    if raw_dir is None:
+        raw_obs = os.path.join(repo_root, "000_raw", "solar26")
+        raw_dir = raw_obs if os.path.exists(raw_obs) else os.path.join(repo_root, "000_raw")
+    if prep_dir is None:
+        prep_obs = os.path.join(repo_root, "005_raw_preprocessed", "solar26")
+        prep_dir = prep_obs if os.path.exists(prep_obs) else os.path.join(repo_root, "005_raw_preprocessed")
     os.makedirs(prep_dir, exist_ok=True)
 
     raw_tls = sorted([f for f in os.listdir(raw_dir) if f.endswith(".mp4") and "_TL_" in f])
@@ -1613,14 +1619,21 @@ def run_coc_pipeline(
     proj = resolve_project(project_arg=project, repo_root=repo_root, in_base=in_dir or "010_in", out_base=out_dir or "040_out")
     in_dir = proj["in_dir"]
     out_dir = proj["out_dir"]
+    temp_dir = proj["temp_dir"]
+    project_id = proj["project_id"]
+    raw_dir = proj["raw_dir"]
+    prep_dir = proj["prep_dir"]
     is_project_preprocessed = proj["is_preprocessed"]
     if film_style is None:
         film_style = proj["film_style"]
 
     os.makedirs(out_dir, exist_ok=True)
+    os.makedirs(temp_dir, exist_ok=True)
 
     if output_film is None:
-        output_film = os.path.join(out_dir, f"full_eclipse_{film_style}_video.mp4")
+        output_film = os.path.join(temp_dir, f"full_eclipse_{film_style}_video.mp4")
+
+    final_subtitled_master = os.path.join(out_dir, f"{project_id}.mp4")
 
     # Discover and separate visual assets from audio
     visual_assets, music_asset = discover_coc_assets(in_dir, is_project_preprocessed=is_project_preprocessed)
@@ -1633,13 +1646,14 @@ def run_coc_pipeline(
     print("=" * 65)
     print("ECLIPSE ASSEMBLER: CONVENTION-OVER-CONFIGURATION MASTER PIPELINE")
     print("=" * 65)
-    print(f"  Project            : {proj['name']}")
+    print(f"  Project            : {proj['name']} (ID: {project_id})")
     print(f"  Film Assembly Style: {film_style.upper()}")
     print(f"  Input Directory    : {in_dir}")
     print(f"  Output Directory   : {out_dir}")
+    print(f"  Temp Directory     : {temp_dir}")
     print(f"  Clean Video Output : {output_film}")
     if not no_subtitles:
-        print(f"  Subtitled Master   : {os.path.join(out_dir, f'full_eclipse_{film_style}.mp4')}")
+        print(f"  Subtitled Master   : {final_subtitled_master}")
     print(f"  Master Resolution  : {master_w}x{master_h} px")
     print(f"  Visual Clips       : {len(visual_assets)} discovered")
     if music_asset is not None and not no_music:
@@ -1652,14 +1666,14 @@ def run_coc_pipeline(
 
     # 1. Generate opening dynamic title card if requested
     if not no_title:
-        title_clip_path = os.path.join(out_dir, "00_title.mp4")
+        title_clip_path = os.path.join(temp_dir, "00_title.mp4")
         if not os.path.exists(title_clip_path) or force_all:
             print(f"Generating Dynamic Opening Title Card ({title_duration}s)...")
             ctc.generate_title_card(
                 duration_s=title_duration,
                 width=master_w,
                 height=master_h,
-                out_dir=out_dir,
+                out_dir=temp_dir,
                 output_mp4=title_clip_path,
                 fps=30.0,
                 force_db=force_db,
@@ -1674,7 +1688,7 @@ def run_coc_pipeline(
         in_path = a['path']
         raw_name = a['raw_name']
         name_no_ext, _ = os.path.splitext(raw_name)
-        out_clip_path = os.path.join(out_dir, f"{name_no_ext}.mp4")
+        out_clip_path = os.path.join(temp_dir, f"{name_no_ext}.mp4")
 
         print(f"Processing Asset [{idx:02d}]: {raw_name} ({a_type.upper()})...")
 
@@ -1689,7 +1703,10 @@ def run_coc_pipeline(
 
         if a_type == "timelapse":
             if a.get('is_preprocessed'):
-                prep_src = resolve_preprocessed_timelapse(a, repo_root=repo_root, force=force_all or force_prep, extrapolate_c1=extrapolate_c1)
+                prep_src = resolve_preprocessed_timelapse(
+                    a, repo_root=repo_root, raw_dir=raw_dir, prep_dir=prep_dir,
+                    force=force_all or force_prep, extrapolate_c1=extrapolate_c1
+                )
                 print(f"  • Using Preprocessed Restored Timelapse: {prep_src} (stabilization skipped)")
                 cmd_prep = [
                     'ffmpeg', '-y', '-loglevel', 'error',
@@ -1755,7 +1772,7 @@ def run_coc_pipeline(
                 out_path=out_clip_path,
                 project=proj['name'],
                 in_dir=in_dir,
-                out_dir=out_dir,
+                out_dir=temp_dir,
                 master_w=master_w,
                 master_h=master_h,
                 fps=30.0, crf=16, preset="fast"
@@ -1774,7 +1791,7 @@ def run_coc_pipeline(
                 duration_s=a['duration'],
                 width=master_w,
                 height=master_h,
-                out_dir=out_dir,
+                out_dir=temp_dir,
                 output_mp4=out_clip_path,
                 music_info=music_info,
                 eclipse_date_str=date_str
@@ -1788,7 +1805,7 @@ def run_coc_pipeline(
         assemble_art_film(
             project=proj['name'],
             in_dir=in_dir,
-            out_dir=out_dir,
+            out_dir=temp_dir,
             output_path=output_film,
             master_w=master_w,
             master_h=master_h,
@@ -1827,7 +1844,7 @@ def run_coc_pipeline(
 
     # 4. Invoke standalone subtitle generator
     if not no_subtitles:
-        srt_master_path = os.path.join(out_dir, f"full_eclipse_{film_style}.srt")
+        srt_master_path = os.path.join(temp_dir, f"full_eclipse_{film_style}.srt")
         ges.generate_eclipse_subtitles_pipeline(
             video_path=output_film,
             output_srt_path=srt_master_path,
@@ -1855,14 +1872,13 @@ def run_coc_pipeline(
 
         targets_to_mux = []
         if not no_subtitles:
-            subtitled_path = os.path.join(out_dir, f"full_eclipse_{film_style}.mp4")
-            if os.path.exists(subtitled_path):
-                targets_to_mux.append(subtitled_path)
+            if os.path.exists(final_subtitled_master):
+                targets_to_mux.append(final_subtitled_master)
         if os.path.exists(output_film) and output_film not in targets_to_mux:
             targets_to_mux.append(output_film)
 
         for tgt in targets_to_mux:
-            temp_out = os.path.join(out_dir, f"tmp_mux_{os.path.basename(tgt)}")
+            temp_out = os.path.join(temp_dir, f"tmp_mux_{os.path.basename(tgt)}")
             aat.add_audio_to_video(
                 video_path=tgt,
                 audio_path=music_asset['path'],

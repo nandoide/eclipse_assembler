@@ -88,6 +88,39 @@ def get_default_project(repo_root: Optional[str] = None, in_base: str = "010_in"
     return None
 
 
+def extract_project_id(folder_name: str) -> str:
+    """
+    Extracts the base project identifier (e.g. 'solar26_v1', 'solar26_main')
+    by stripping layout and preprocessing convention suffixes.
+    """
+    pid = folder_name
+    for _ in range(3):
+        for sfx in ["_preproc", "_prep", "_standard", "_art"]:
+            if pid.lower().endswith(sfx):
+                pid = pid[:-len(sfx)]
+    return pid
+
+
+def detect_observation_name(folder_name: str, repo_root: str) -> str:
+    """
+    Detects the observation subfolder inside 000_raw/ and 005_raw_preprocessed/
+    matching the project folder prefix (e.g. 'solar26').
+    """
+    raw_root = os.path.join(repo_root, "000_raw")
+    if os.path.exists(raw_root):
+        subdirs = [d for d in os.listdir(raw_root) if os.path.isdir(os.path.join(raw_root, d)) and not d.startswith(".") and d != "bak"]
+        # Find matching prefix
+        matches = [d for d in subdirs if folder_name.lower().startswith(d.lower())]
+        if matches:
+            matches.sort(key=len, reverse=True)
+            return matches[0]
+        if len(subdirs) == 1:
+            return subdirs[0]
+
+    # Fallback to leading token before underscore
+    return folder_name.split("_")[0]
+
+
 def resolve_project(
     project_arg: Optional[str] = None,
     repo_root: Optional[str] = None,
@@ -95,7 +128,7 @@ def resolve_project(
     out_base: str = "040_out"
 ) -> Dict:
     """
-    Resolves project configuration.
+    Resolves project configuration, observation subfolder, project_id, and directories.
     If project_arg is given: matches exact name, prefix, or path.
     If project_arg is None: selects the most recently modified project directory.
     If no subdirectories exist in 010_in: falls back to 010_in/ root.
@@ -112,10 +145,27 @@ def resolve_project(
     if os.path.basename(os.path.dirname(in_base_abs)) == "010_in" and os.path.isdir(in_base_abs):
         folder_name = os.path.basename(in_base_abs)
         name_lower = folder_name.lower()
+        proj_id = extract_project_id(folder_name)
+        obs_name = detect_observation_name(folder_name, repo_root)
+        out_dir = os.path.join(out_base_abs, folder_name) if not out_base_abs.endswith(folder_name) else out_base_abs
+        temp_dir = os.path.join(out_dir, "temp")
+        os.makedirs(out_dir, exist_ok=True)
+        os.makedirs(temp_dir, exist_ok=True)
+
+        raw_obs = os.path.join(repo_root, "000_raw", obs_name)
+        raw_dir = raw_obs if os.path.exists(raw_obs) else os.path.join(repo_root, "000_raw")
+        prep_obs = os.path.join(repo_root, "005_raw_preprocessed", obs_name)
+        prep_dir = prep_obs if os.path.exists(prep_obs) else os.path.join(repo_root, "005_raw_preprocessed")
+
         return {
             "name": folder_name,
+            "project_id": proj_id,
+            "observation": obs_name,
+            "raw_dir": raw_dir,
+            "prep_dir": prep_dir,
             "in_dir": in_base_abs,
-            "out_dir": os.path.join(out_base_abs, folder_name) if not out_base_abs.endswith(folder_name) else out_base_abs,
+            "out_dir": out_dir,
+            "temp_dir": temp_dir,
             "film_style": "art" if "art" in name_lower else "standard",
             "is_preprocessed": ("preproc" in name_lower or "prep" in name_lower),
             "mtime": os.path.getmtime(in_base_abs),
@@ -136,14 +186,21 @@ def resolve_project(
                 selected_project = p
                 break
 
-        # 2. Prefix match (e.g. 'solar26v1' matches 'solar26v1_standard')
+        # 2. Prefix match (e.g. 'solar26_v1' matches 'solar26_v1_standard')
         if not selected_project:
             for p in projects:
                 if p["name"].startswith(base_arg) or p["name"].startswith(clean_arg):
                     selected_project = p
                     break
 
-        # 3. Direct directory path
+        # 3. Project ID match (e.g. 'solar26_main' matches 'solar26_main_standard_preproc')
+        if not selected_project:
+            for p in projects:
+                if extract_project_id(p["name"]) == base_arg:
+                    selected_project = p
+                    break
+
+        # 4. Direct directory path
         if not selected_project and os.path.isdir(clean_arg):
             name = os.path.basename(clean_arg)
             name_lower = name.lower()
@@ -177,17 +234,32 @@ def resolve_project(
 
     proj_name = selected_project["name"]
     proj_in_dir = selected_project["path"]
+    proj_id = extract_project_id(proj_name)
+    obs_name = detect_observation_name(proj_name, repo_root)
+
     if proj_name == "default":
         proj_out_dir = out_base_abs
     else:
         proj_out_dir = os.path.join(out_base_abs, proj_name)
 
+    proj_temp_dir = os.path.join(proj_out_dir, "temp")
     os.makedirs(proj_out_dir, exist_ok=True)
+    os.makedirs(proj_temp_dir, exist_ok=True)
+
+    raw_obs = os.path.join(repo_root, "000_raw", obs_name)
+    raw_dir = raw_obs if os.path.exists(raw_obs) else os.path.join(repo_root, "000_raw")
+    prep_obs = os.path.join(repo_root, "005_raw_preprocessed", obs_name)
+    prep_dir = prep_obs if os.path.exists(prep_obs) else os.path.join(repo_root, "005_raw_preprocessed")
 
     return {
         "name": proj_name,
+        "project_id": proj_id,
+        "observation": obs_name,
+        "raw_dir": raw_dir,
+        "prep_dir": prep_dir,
         "in_dir": proj_in_dir,
         "out_dir": proj_out_dir,
+        "temp_dir": proj_temp_dir,
         "film_style": selected_project["film_style"],
         "is_preprocessed": selected_project["is_preprocessed"],
         "mtime": selected_project["mtime"],
