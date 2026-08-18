@@ -1281,7 +1281,7 @@ def assemble_art_film(
                 break
 
     comp_regenerated = False
-    if not os.path.exists(art_comp_png) or force_all or force_prep or prep_newer:
+    if not os.path.exists(art_comp_png) or not os.path.exists(art_comp_json) or force_all or force_prep or prep_newer:
         print(f"Generating 4K Ultra-HD Composite Canvas for Camera Dives ({comp_layout})...")
         cec.build_composite(
             layout=comp_layout,

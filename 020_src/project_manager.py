@@ -239,6 +239,10 @@ def resolve_project(
 
     if proj_name == "default":
         proj_out_dir = out_base_abs
+    elif out_base_abs.endswith(f"/{proj_name}/temp") or (os.path.basename(out_base_abs) == "temp" and os.path.basename(os.path.dirname(out_base_abs)) == proj_name):
+        proj_out_dir = os.path.dirname(out_base_abs)
+    elif out_base_abs.endswith(f"/{proj_name}"):
+        proj_out_dir = out_base_abs
     else:
         proj_out_dir = os.path.join(out_base_abs, proj_name)
 

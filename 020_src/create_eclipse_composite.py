@@ -1587,8 +1587,11 @@ def build_composite(
     jpg_out = os.path.splitext(final_out)[0] + ".jpg"
     cv2.imwrite(jpg_out, canvas, [cv2.IMWRITE_JPEG_QUALITY, 95])
 
-    # Save JSON metadata with exact frame timestamps and GPS info inside temp_dir
-    meta_json_path = os.path.join(temp_dir, f"{os.path.splitext(os.path.basename(final_out))[0]}.json")
+    # Save JSON metadata with exact frame timestamps and GPS info
+    if output_path is not None:
+        meta_json_path = os.path.splitext(final_out)[0] + ".json"
+    else:
+        meta_json_path = os.path.join(temp_dir, f"{os.path.splitext(os.path.basename(final_out))[0]}.json")
     lat_str = f"{abs(lat_deg):.4f}° {'N' if lat_deg >= 0 else 'S'}"
     lon_str = f"{abs(lon_deg):.4f}° {'E' if lon_deg >= 0 else 'W'}"
     alt_str = f"ALT: {alt_m:.1f} M" if alt_m % 1 != 0 else f"ALT: {int(alt_m)} M"
