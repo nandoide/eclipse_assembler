@@ -205,12 +205,35 @@ def build_timeline_mapping(
     in_dir_abs = in_dir if os.path.isabs(in_dir) else os.path.join(repo_root, in_dir)
 
     # Auto-detect telemetry and initial trim offsets against raw footage:
-    tel_ing = detect_clip_telemetry(os.path.join(in_dir_abs, "01_timelapse_i10.mp4"))
-    tel_pre = detect_clip_telemetry(os.path.join(in_dir_abs, "02_video_slowdown_10.mp4"))
-    tel_eg  = detect_clip_telemetry(os.path.join(in_dir_abs, "04_timelapse_i10.mp4"))
+    p_ing_cand = None
+    p_pre_cand = None
+    p_egr_cand = None
+    if os.path.exists(in_dir_abs):
+        for fn in sorted(os.listdir(in_dir_abs)):
+            fp = os.path.join(in_dir_abs, fn)
+            if not os.path.isdir(fp) and not fn.startswith("."):
+                if fn.startswith("01_") or "ingress" in fn.lower():
+                    p_ing_cand = fp
+                elif fn.startswith("02_") or "slowdown" in fn.lower() or "pre_tot" in fn.lower():
+                    p_pre_cand = fp
+                elif fn.startswith("04_") or "egress" in fn.lower():
+                    p_egr_cand = fp
 
-    dt_ingress_start  = tel_ing["dt_start"] if tel_ing else datetime.datetime(dt_base.year, dt_base.month, dt_base.day, 19, 35, 13)
-    dt_ingress_end    = tel_ing["dt_end"]   if tel_ing else datetime.datetime(dt_base.year, dt_base.month, dt_base.day, 20, 19, 33)
+    prep_dir_abs = os.path.join(repo_root, "005_raw_preprocessed")
+    if os.path.exists(prep_dir_abs):
+        prep_files = sorted([f for f in os.listdir(prep_dir_abs) if f.endswith(".mp4") and "_TL_" in f])
+        if prep_files:
+            if not p_ing_cand or "prep" in str(p_ing_cand).lower():
+                p_ing_cand = os.path.join(prep_dir_abs, prep_files[0])
+            if len(prep_files) > 1 and (not p_egr_cand or "prep" in str(p_egr_cand).lower()):
+                p_egr_cand = os.path.join(prep_dir_abs, prep_files[1])
+
+    tel_ing = detect_clip_telemetry(p_ing_cand) if p_ing_cand else None
+    tel_pre = detect_clip_telemetry(p_pre_cand) if p_pre_cand else None
+    tel_eg  = detect_clip_telemetry(p_egr_cand) if p_egr_cand else None
+
+    dt_ingress_start  = tel_ing["dt_start"] if tel_ing else datetime.datetime(dt_base.year, dt_base.month, dt_base.day, 19, 31, 43, 93000)
+    dt_ingress_end    = tel_ing["dt_end"]   if tel_ing else datetime.datetime(dt_base.year, dt_base.month, dt_base.day, 20, 28, 23, 93000)
 
     dt_pre_tot_start  = tel_pre["dt_start"] if tel_pre else datetime.datetime(dt_base.year, dt_base.month, dt_base.day, 20, 20, 36, 811000)
     dt_pre_tot_end    = datetime.datetime(dt_base.year, dt_base.month, dt_base.day, 20, 27, 31, 588000)
@@ -218,8 +241,9 @@ def build_timeline_mapping(
     dt_totality_start = datetime.datetime(dt_base.year, dt_base.month, dt_base.day, 20, 27, 31, 588000)
     dt_totality_end   = datetime.datetime(dt_base.year, dt_base.month, dt_base.day, 20, 29, 18, 921000)
 
-    dt_egress_start   = tel_eg["dt_start"] if tel_eg else datetime.datetime(dt_base.year, dt_base.month, dt_base.day, 20, 35, 23)
-    dt_egress_end     = tel_eg["dt_end"]   if tel_eg else datetime.datetime(dt_base.year, dt_base.month, dt_base.day, 21, 16, 23)
+    # Egress anchored to continuous video C3 (20:29:11.800 CEST)
+    dt_egress_start   = tel_eg["dt_start"] if tel_eg else datetime.datetime(dt_base.year, dt_base.month, dt_base.day, 20, 28, 21, 800000)
+    dt_egress_end     = tel_eg["dt_end"]   if tel_eg else datetime.datetime(dt_base.year, dt_base.month, dt_base.day, 21, 22, 11, 800000)
 
     trans_dur = freeze_before + fade_out + black_duration + fade_in + freeze_after
 
@@ -564,7 +588,9 @@ def build_timeline_mapping(
             if primary == "timelapse":
                 for tok in tokens[1:]:
                     tok_l = tok.lower()
-                    if tok_l.startswith("i") and tok_l[1:].replace('.', '', 1).isdigit():
+                    if tok_l in ["prep", "preprocessed", "restored"]:
+                        pass
+                    elif tok_l.startswith("i") and tok_l[1:].replace('.', '', 1).isdigit():
                         interval = float(tok_l[1:])
                     elif tok_l.endswith("s") and tok_l[:-1].replace('.', '', 1).isdigit():
                         interval = float(tok_l[:-1])
@@ -627,11 +653,25 @@ def build_timeline_mapping(
         cname = f"{item['name_no_ext']}.mp4"
         ctype = item['type']
         cpath = os.path.join(out_dir, cname)
-        if not os.path.exists(cpath):
-            cpath = os.path.join(in_dir, item['raw_name'])
+        if not os.path.exists(cpath) or os.path.getsize(cpath) == 0:
+            repo_root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+            prep_dir = os.path.join(repo_root, "005_raw_preprocessed")
+            raw_dir = os.path.join(repo_root, "000_raw")
+            cpath = None
+            if ("prep" in item['name_no_ext'] or "timelapse" in item['name_no_ext']) and os.path.exists(raw_dir):
+                raw_tls = sorted([f for f in os.listdir(raw_dir) if f.endswith(".mp4") and "_TL_" in f])
+                if raw_tls:
+                    tl_f = raw_tls[0] if item['index'] <= 2 else (raw_tls[1] if len(raw_tls) > 1 else raw_tls[0])
+                    p_candidate = os.path.join(prep_dir, tl_f)
+                    if os.path.exists(p_candidate) and os.path.getsize(p_candidate) > 0:
+                        cpath = p_candidate
+            if not cpath or not os.path.exists(cpath):
+                in_cand = os.path.join(in_dir, item['raw_name'])
+                if os.path.exists(in_cand) and not os.path.isdir(in_cand) and in_cand.endswith(('.mp4', '.mov', '.avi', '.mkv', '.jpg', '.jpeg', '.png')):
+                    cpath = in_cand
 
         frame_cnt = None
-        if os.path.exists(cpath):
+        if cpath and os.path.exists(cpath) and not os.path.isdir(cpath) and cpath.endswith(('.mp4', '.mov', '.avi', '.mkv')):
             info = get_video_info(cpath)
             clip_dur = info['duration']
             cap = cv2.VideoCapture(cpath)

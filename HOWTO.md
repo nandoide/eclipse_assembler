@@ -103,18 +103,24 @@ eclipse26/
 │   ├── DWARF_mini_TELE_2026-08-12-20-20-36-811.mp4
 │   ├── DWARF_mini_TELE_TL_2026-08-12-20-32-53-127.mp4
 │   └── gps.jpg              # Any photo with EXIF GPS coordinates of observation site
+├── 005_raw_preprocessed/    # Autonomous Photosphere-Restored & Centered Raw Timelapses
+│   ├── DWARF_mini_TELE_TL_2026-08-12-19-35-13-093.mp4
+│   └── DWARF_mini_TELE_TL_2026-08-12-20-32-53-127.mp4
 ├── 010_in/                  # Curated CoC source clips and instructions
 │   ├── 01_music_corrubedo_nandoide.wav # Soundtrack ([INDEX]_music_[TITLE]_[AUTHOR].[ext])
-│   ├── 01_timelapse_i10.mp4
+│   ├── 01_timelapse_prep_i10 (or 01_timelapse_i10.mp4)
 │   ├── 02_video_slowdown_10.mp4
 │   ├── 03_video_realtime.mp4
-│   ├── 04_timelapse_i10.mp4
+│   ├── 04_timelapse_prep_i10 (or 04_timelapse_i10.mp4)
 │   ├── 05_totality_6.jpg (or 05_photo_6.jpg)
 │   ├── 06_composite_arc_10
 │   └── 07_endtitles.md
 ├── 020_src/                 # Core Python engine modules
 │   ├── add_audio_track.py
 │   ├── build_full_eclipse.py
+│   ├── build_master_solar_disk.py
+│   ├── render_restored_eclipse_video.py
+│   ├── preprocess_raw_eclipse_timelapses.py
 │   ├── create_totality_hdr.py
 │   ├── create_eclipse_composite.py
 │   ├── create_title_card.py
@@ -585,10 +591,24 @@ pip install -r requirements.txt
 
 ---
 
+### Recipe 7: Autonomous Raw Preprocessing with C1 Extrapolation
+```bash
+# Run standalone master raw timelapse preprocessing with C1 extrapolation:
+.venv/bin/python3 020_src/preprocess_raw_eclipse_timelapses.py --extrapolate-c1
+
+# Or run full master film assembly with C1 extrapolation & force regeneration:
+.venv/bin/python3 020_src/build_full_eclipse.py --film-style art --extrapolate-c1 --force-prep
+```
+*Autonomously reconstructs the full master solar disk from complementary clear regions, extrapolates the lunar orbit backward to First Contact (C1) and 4 pre-C1 frames of untouched photosphere, completely removes occluding tree branches and clouds, and links directly to master film assembly.*
+
+---
+
 ## 10. Troubleshooting & Best Practices
 
 | Symptom | Probable Cause | Recommended Solution |
 | :--- | :--- | :--- |
+| **Ingress starts with partial bite already present** | Recording began ~4 min after First Contact (C1) | Use `--extrapolate-c1` in `extract_eclipse_geometry.py`, `preprocess_raw_eclipse_timelapses.py`, or `build_full_eclipse.py` to extrapolate lunar kinematics back to tangent contact $D = R_s + R_m$. |
+| **Tree branches occluding sun during egress** | Low elevation telescope line-of-sight obstruction | Use `01_timelapse_prep_i10` / `04_timelapse_prep_i10` directives in `010_in/` to invoke the master photosphere restoration engine. |
 | **Vertical jitter during low-altitude egress** | Atmospheric vertical flattening deceived circular solver | Ensure using the oblate solver (`020_src/build_full_eclipse.py`), which uses the physical ellipse model $R_y(t) = R_x(1.0 - 0.042 \cdot \text{prog})$. |
 | **Flicker in pre-totality crescent** | Telescope auto-exposure stepped abruptly | `process_video_slowdown_asset` applies moving-average luminance gain correction automatically. Rebuild with `--force-all`. |
 | **Subtitles not appearing in QuickTime** | Track metadata missing `tx3g` flag | The pipeline embeds subtitles with `mov_text` and `-tag:v hvc1`. Open in QuickTime and select *Subtitles $\to$ Español / English*. |

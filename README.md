@@ -110,10 +110,12 @@ This pipeline follows **Convention over Configuration (CoC)**. Curated assets in
 
 | Filename Example | Type | Behavior & Parameters | Speed / Duration |
 | :--- | :--- | :--- | :--- |
-| **`01_timelapse_i10.mp4`** | `timelapse` | Ingress timelapse with `_i[INTERVAL]` parameter (e.g. `_i10` = 1 frame every 10s). Subpixel solar limb convex-hull stabilization and white balance equalization. | Native clip duration (speed: $10\text{s} \times 30\text{fps} = \mathbf{300\times}$) |
+| **`01_timelapse_prep_i10`** | `timelapse_prep` | **Preprocessed & Photosphere-Restored Ingress Timelapse**: Automatically consumes restored, obstacle-free, centered footage from `005_raw_preprocessed/` (auto-triggered from `000_raw/` if missing). Stabilization is skipped as the clip is already 100% geometrically jitter-free. Interval is set to 10s (`_i10`). | Native clip duration (speed: $10\text{s} \times 30\text{fps} = \mathbf{300\times}$) |
+| **`01_timelapse_i10.mp4`** | `timelapse` | Standard Ingress timelapse with `_i[INTERVAL]` parameter (e.g. `_i10` = 1 frame every 10s). Subpixel solar limb convex-hull stabilization and white balance equalization. | Native clip duration (speed: $10\text{s} \times 30\text{fps} = \mathbf{300\times}$) |
 | **`02_video_slowdown_10.mp4`** | `video_slowdown` | High-speed burst video. Automatically filters black/corrupt frames, resamples $396.7\text{s}$ of pre-totality footage to `duration` (e.g. 10s), smooths camera exposure jumps, and stabilizes solar limb. | 10.0s (speed: $\frac{396.7\text{s}}{10\text{s}} \approx \mathbf{40\times}$) |
 | **`03_video_realtime.mp4`** | `video_realtime` | Continuous 1x real-time video (30 fps) with lunar silhouette, corona, and Baily's beads tracking. Preserves exact 1:1 real-time duration. | Native real duration ($\mathbf{1\times}$ Real-Time) |
-| **`04_timelapse_i10.mp4`** | `timelapse` | Egress timelapse with `_i[INTERVAL]` parameter (`_i10` = 1 frame every 10s). Subpixel solar limb stabilization. | Native clip duration (speed: $10\text{s} \times 30\text{fps} = \mathbf{300\times}$) |
+| **`04_timelapse_prep_i10`** | `timelapse_prep` | **Preprocessed & Photosphere-Restored Egress Timelapse**: Automatically consumes restored, foliage/branch-free footage from `005_raw_preprocessed/` (auto-triggered from `000_raw/` if missing). Stabilization is skipped. Interval is set to 10s (`_i10`). | Native clip duration (speed: $10\text{s} \times 30\text{fps} = \mathbf{300\times}$) |
+| **`04_timelapse_i10.mp4`** | `timelapse` | Standard Egress timelapse with `_i[INTERVAL]` parameter (`_i10` = 1 frame every 10s). Subpixel solar limb stabilization. | Native clip duration (speed: $10\text{s} \times 30\text{fps} = \mathbf{300\times}$) |
 | **`05_totality_6.jpg`** | `totality` | Multi-exposure Totality HDR composite artwork (synthesizing corona, ruby $H\alpha$ prominences, and Baily's beads across totality). Scaled with black letterbox padding; automatically tags subtitles and chapters as multi-phase artistic composite artwork. | 10.0s (or `_6` for 6s) |
 | **`05_photo_6.jpg`** | `photo` | Single-exposure still image, scaled preserving aspect ratio with clean black letterbox padding for specified duration (e.g. 6s). | 10.0s (or `_6` for 6s) |
 | **`06_composite_arc_10`** | `composite` | Generates high-resolution composite artwork mosaic on-the-fly (`arc`, `circle`, `ellipse`, `sinusoid`, `spiral`, etc.) with prominent totality contacts (`C2`, `MAX`, `C3`), scaled to project resolution (16:9 1280x720), held for specified duration (e.g. 10s). | 10.0s |
@@ -424,23 +426,31 @@ python 020_src/build_full_eclipse.py --force-all
 
 ```
 eclipse_assembler/
-├── 000_raw/                          # ★ Ground-truth raw telescope footage & telemetry
+├── 000_raw/                          # Untouched raw telescope footage & observer GPS photo
 │   ├── DWARF_mini_TELE_TL_2026-08-12-19-35-13-093.mp4
 │   ├── DWARF_mini_TELE_2026-08-12-20-20-36-811.mp4
 │   ├── DWARF_mini_TELE_TL_2026-08-12-20-32-53-127.mp4
 │   └── gps.jpg                       # Observer coordinates & elevation metadata photo
 │
+├── 005_raw_preprocessed/             # ★ Autonomous Photosphere-Restored & C1-Extrapolated Raw Timelapses
+│   ├── DWARF_mini_TELE_TL_2026-08-12-19-35-13-093.mp4 # Ingress (288 frames: pre-C1, C1 contact & full sequence)
+│   └── DWARF_mini_TELE_TL_2026-08-12-20-32-53-127.mp4 # Egress (293 frames: foliage/branch-free restored photosphere)
+│
 ├── 010_in/                           # Curated source input assets (CoC naming)
-│   ├── 01_timelapse_i10.mp4          # Ingress time-lapse (1 frame every 10s)
+│   ├── 01_music_corrubedo_nandoide.wav # Optional musical soundtrack (CoC: NN_music_Title_Author.wav)
+│   ├── 01_timelapse_prep_i10         # Ingress directive (points to 005_raw_preprocessed/)
 │   ├── 02_video_slowdown_10.mp4      # Pre-totality burst video (10s resample)
 │   ├── 03_video_realtime.mp4         # Totality real-time continuous video (1x)
-│   ├── 04_timelapse_i10.mp4          # Egress time-lapse (1 frame every 10s)
+│   ├── 04_timelapse_prep_i10         # Egress directive (points to 005_raw_preprocessed/)
 │   ├── 05_totality_6.jpg             # Totality HDR multi-phase artwork (6s hold)
-│   ├── 06_composite_arc_10           # On-the-fly composite mosaic (10s hold)
-│   ├── 07_endtitles.md               # Closing credits descriptor (6s hold)
-│   └── 01_music_corrubedo_nandoide.wav # Optional musical soundtrack (CoC: NN_music_Title_Author.wav)
+│   ├── 06_composite_circle_4k_10     # Circular 4K composite mosaic directive (10s hold)
+│   └── 07_endtitles.md               # Closing credits descriptor (6s hold)
 │
 ├── 020_src/                          # Python source code
+│   ├── extract_eclipse_geometry.py   # ★ Orbital kinematics solver & C1 extrapolation engine
+│   ├── build_master_solar_disk.py    # ★ 100% complete solar photosphere fusion engine
+│   ├── render_restored_eclipse_video.py # ★ Photosphere applicator & occultation bite renderer
+│   ├── preprocess_raw_eclipse_timelapses.py # ★ Master raw timelapse preprocessing orchestrator
 │   ├── build_full_eclipse.py         # ★ CoC Master pipeline and assembly script (--film-style standard/art)
 │   ├── create_camera_dive.py         # ★ Continuous sub-pixel Lanczos-4 camera dive zoom generator
 │   ├── add_audio_track.py            # ★ Intelligent musical phrase retargeting and audio muxing

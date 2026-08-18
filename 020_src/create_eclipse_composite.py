@@ -155,14 +155,33 @@ def detect_clip_telemetry(clip_path, raw_dir="000_raw"):
     Detects the exact physical start datetime and trim offset for a clip in 010_in/
     by optically matching its first frame against the raw files in 000_raw/.
     """
-    if not clip_path or not os.path.exists(clip_path):
+    if not clip_path:
         return None
 
     repo_root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
     in_dir = os.path.join(repo_root, "010_in")
+    prep_dir = os.path.join(repo_root, "005_raw_preprocessed")
+    out_dir = os.path.join(repo_root, "040_out")
+
     basename = os.path.basename(clip_path)
-    in_candidate = os.path.join(in_dir, basename)
-    match_source = in_candidate if os.path.exists(in_candidate) else clip_path
+    match_source = clip_path
+    if not (os.path.exists(match_source) and os.path.getsize(match_source) > 0 and match_source.endswith((".mp4", ".mov", ".avi", ".mkv"))):
+        # Look in 040_out
+        out_cand = os.path.join(out_dir, f"{basename}.mp4")
+        if os.path.exists(out_cand) and os.path.getsize(out_cand) > 0:
+            match_source = out_cand
+        elif "prep" in basename or "timelapse" in basename:
+            # Look in 005_raw_preprocessed
+            raw_path = os.path.join(repo_root, "000_raw")
+            raw_tls = sorted([f for f in os.listdir(raw_path) if f.endswith(".mp4") and "_TL_" in f]) if os.path.exists(raw_path) else []
+            if raw_tls:
+                tl_f = raw_tls[0] if (basename.startswith("01") or "ingress" in basename) else (raw_tls[1] if len(raw_tls) > 1 else raw_tls[0])
+                prep_cand = os.path.join(prep_dir, tl_f)
+                if os.path.exists(prep_cand) and os.path.getsize(prep_cand) > 0:
+                    match_source = prep_cand
+
+    if not match_source or not os.path.exists(match_source) or os.path.getsize(match_source) == 0 or not match_source.endswith((".mp4", ".mov", ".avi", ".mkv")):
+        return None
 
     if match_source in _TELEMETRY_CACHE:
         return _TELEMETRY_CACHE[match_source]
@@ -177,8 +196,8 @@ def detect_clip_telemetry(clip_path, raw_dir="000_raw"):
 
     # Parse interval from filename (e.g. _i10 -> 10.0s)
     m_i = re.search(r"_i(\d+)", basename)
-    interval_s = float(m_i.group(1)) if m_i else None
-    is_tl = interval_s is not None
+    interval_s = float(m_i.group(1)) if m_i else (10.0 if "_TL_" in basename or "timelapse" in basename.lower() else None)
+    is_tl = (interval_s is not None) or ("_TL_" in basename) or ("timelapse" in basename.lower())
 
     resolved_raw = raw_dir if os.path.isabs(raw_dir) else os.path.join(repo_root, raw_dir)
     if not os.path.exists(resolved_raw):
@@ -191,7 +210,13 @@ def detect_clip_telemetry(clip_path, raw_dir="000_raw"):
     best_raw = None
     best_k = 0
 
-    if is_tl:
+    # Direct filename match in raw directory (e.g. preprocessed file keeping raw filename)
+    raw_exact = os.path.join(resolved_raw, basename)
+    if os.path.exists(raw_exact):
+        best_raw = raw_exact
+        best_k = 0
+        best_diff = 0.0
+    elif is_tl:
         thumb_w, thumb_h = 128, 72
         thumb_in = cv2.resize(f_in, (thumb_w, thumb_h)).astype(np.float32)
 
@@ -230,7 +255,25 @@ def detect_clip_telemetry(clip_path, raw_dir="000_raw"):
     dt_raw = datetime.datetime(y, mo, d, h, mi, s, ms * 1000)
 
     if is_tl:
-        dt_start = dt_raw + datetime.timedelta(seconds=best_k * interval_s)
+        cap_raw_chk = cv2.VideoCapture(best_raw)
+        n_raw_total = int(cap_raw_chk.get(cv2.CAP_PROP_FRAME_COUNT)) if cap_raw_chk.isOpened() else n_in
+        cap_raw_chk.release()
+
+        # If source is from 005_raw_preprocessed, the filename timestamp is already exact
+        if "005_raw_preprocessed" in match_source or "_TL_2026-08-12-19-31-43" in match_source or "_TL_2026-08-12-20-27-53" in match_source:
+            if "19-31-43" in match_source or "ingress" in basename.lower() or "01" in basename:
+                dt_start = dt_raw
+            else:
+                # Egress: Anchor to continuous video C3 (20:29:11.800 CEST), which is frame 5 in 324-frame preprocessed video
+                dt_c3_ref = datetime.datetime(y, mo, d, 20, 29, 11, 800000)
+                dt_start = dt_c3_ref - datetime.timedelta(seconds=5 * interval_s)
+        else:
+            n_extrapolated = max(0, n_in - n_raw_total) if "19-35-13" in os.path.basename(best_raw) or "ingress" in basename.lower() else 0
+            dt_start = dt_raw + datetime.timedelta(seconds=(best_k - n_extrapolated) * interval_s)
+            if "20-32-53" in os.path.basename(best_raw) or "egress" in basename.lower() or "04" in basename:
+                # Anchor raw egress to continuous video C3 (20:29:11.800 CEST + 250s for raw frame 0)
+                dt_start = datetime.datetime(y, mo, d, 20, 29, 11, 800000) + datetime.timedelta(seconds=25.0 * interval_s)
+
         dt_end = dt_start + datetime.timedelta(seconds=(n_in - 1) * interval_s)
     else:
         dt_start = dt_raw
@@ -262,38 +305,76 @@ def sample_eclipse_sequence(
     """
     Extracts keyframes from CoC output videos (or input directory) and tags each
     with its exact real-world astronomical local timestamp (CEST):
-      - 01_timelapse (ingress): 2 crescents.
-      - 02_video_slowdown (pre-totality): 2 thin crescents.
-      - 03_video_realtime (totality): 6 symmetric keyframes (beads, chromosphere, corona).
-      - 04_timelapse (egress): 4 crescents.
+      - 01_timelapse (ingress): partial crescents.
+      - 02_video_slowdown (pre-totality): thin crescents (if present).
+      - 03_video_realtime (totality): symmetric keyframes (beads, chromosphere, corona).
+      - 04_timelapse (egress): partial crescents.
     """
     resolved = resolve_output_dir(out_dir)
 
-    def find_file(prefix_or_patterns):
-        repo_root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
-        in_dir = os.path.join(repo_root, "010_in")
-        search_dirs = [in_dir, resolved]
+    repo_root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+    in_dir = os.path.join(repo_root, "010_in")
+    prep_dir = os.path.join(repo_root, "005_raw_preprocessed")
 
+    # Detect if preprocessed mode is active in 010_in (or 005_raw_preprocessed has files)
+    is_prep_mode = False
+    if os.path.exists(in_dir):
+        for fn in os.listdir(in_dir):
+            if "prep" in fn.lower() and "timelapse" in fn.lower():
+                is_prep_mode = True
+                break
+    if not is_prep_mode and os.path.exists(prep_dir):
+        if any(f.endswith(".mp4") and "_TL_" in f for f in os.listdir(prep_dir)):
+            is_prep_mode = True
+
+    # Check if 02_video_slowdown exists in 010_in
+    has_in_pre_tot = False
+    if os.path.exists(in_dir):
+        has_in_pre_tot = any(
+            f.startswith("02_") or "slowdown" in f.lower() or "pre_totality" in f.lower()
+            for f in os.listdir(in_dir)
+            if not f.startswith(".") and not os.path.isdir(os.path.join(in_dir, f))
+        )
+
+    def find_file(prefix_or_patterns, is_timelapse=False, allow_fallback_dir=True):
         patterns = prefix_or_patterns if isinstance(prefix_or_patterns, list) else [prefix_or_patterns]
+
+        # In preprocessed mode: prioritize 005_raw_preprocessed/ for timelapses
+        if is_timelapse and is_prep_mode:
+            if os.path.exists(prep_dir):
+                prep_files = sorted([f for f in os.listdir(prep_dir) if f.endswith(".mp4") and "_TL_" in f])
+                for p in patterns:
+                    if "01" in p or "ingress" in p:
+                        if prep_files:
+                            return os.path.join(prep_dir, prep_files[0])
+                    elif "04" in p or "egress" in p:
+                        if len(prep_files) > 1:
+                            return os.path.join(prep_dir, prep_files[1])
+                        elif prep_files:
+                            return os.path.join(prep_dir, prep_files[0])
+
+        search_dirs = [in_dir, prep_dir]
+        if allow_fallback_dir:
+            search_dirs.append(resolved)
+
         for sdir in search_dirs:
             if not os.path.exists(sdir):
                 continue
             dir_files = sorted(os.listdir(sdir))
             for p in patterns:
-                # 1. Exact match
                 candidate = os.path.join(sdir, p)
-                if os.path.exists(candidate):
+                if os.path.exists(candidate) and not os.path.isdir(candidate) and candidate.endswith((".mp4", ".mov", ".avi")):
                     return candidate
-                # 2. Prefix or substring match
                 for fname in dir_files:
                     if fname.endswith((".mp4", ".mov", ".avi")) and (fname.startswith(p) or p in fname):
                         return os.path.join(sdir, fname)
+
         return None
 
-    p_ingress = find_file(["01_timelapse", "01_", "partial_ingress"])
-    p_pre_tot = find_file(["02_video_slowdown", "02_", "pre_totality"])
-    p_totality = find_file(["03_video_realtime", "03_video", "03_", "totality"])
-    p_egress = find_file(["04_timelapse", "04_", "partial_egress"])
+    p_ingress = find_file(["01_timelapse_prep", "01_timelapse", "01_", "partial_ingress"], is_timelapse=True)
+    p_pre_tot = find_file(["02_video_slowdown", "02_", "pre_totality"], is_timelapse=False, allow_fallback_dir=has_in_pre_tot)
+    p_totality = find_file(["03_video_realtime", "03_video", "03_", "totality"], is_timelapse=False)
+    p_egress = find_file(["04_timelapse_prep", "04_timelapse", "04_", "partial_egress"], is_timelapse=True)
 
     paths = {
         "ingress":  p_ingress,
@@ -321,7 +402,7 @@ def sample_eclipse_sequence(
 
     # Auto-detect telemetry and initial trim offsets against raw footage
     tel_ingress = detect_clip_telemetry(paths["ingress"])
-    tel_pre_tot = detect_clip_telemetry(paths["pre_tot"])
+    tel_pre_tot = detect_clip_telemetry(paths["pre_tot"]) if paths["pre_tot"] else None
     tel_egress  = detect_clip_telemetry(paths["egress"])
 
     if tel_ingress:
@@ -329,8 +410,8 @@ def sample_eclipse_sequence(
         dt_ingress_end   = tel_ingress["dt_end"] + delta_offset
         interval_ing     = tel_ingress["interval_s"]
     else:
-        dt_ingress_start = datetime.datetime(dt_base.year, dt_base.month, dt_base.day, 19, 35, 13) + delta_offset
-        dt_ingress_end   = datetime.datetime(dt_base.year, dt_base.month, dt_base.day, 20, 20, 17) + delta_offset
+        dt_ingress_start = datetime.datetime(dt_base.year, dt_base.month, dt_base.day, 19, 31, 43, 93000) + delta_offset
+        dt_ingress_end   = datetime.datetime(dt_base.year, dt_base.month, dt_base.day, 20, 28, 23) + delta_offset
         interval_ing     = 10.0
 
     if tel_pre_tot:
@@ -348,16 +429,26 @@ def sample_eclipse_sequence(
         dt_egress_end   = tel_egress["dt_end"] + delta_offset
         interval_egr    = tel_egress["interval_s"]
     else:
-        dt_egress_start = datetime.datetime(dt_base.year, dt_base.month, dt_base.day, 20, 35, 24) + delta_offset
-        dt_egress_end   = datetime.datetime(dt_base.year, dt_base.month, dt_base.day, 21, 16, 44) + delta_offset
+        # C3-anchored egress start
+        dt_egress_start = datetime.datetime(dt_base.year, dt_base.month, dt_base.day, 20, 28, 21, 800000) + delta_offset
+        dt_egress_end   = datetime.datetime(dt_base.year, dt_base.month, dt_base.day, 21, 22, 11) + delta_offset
         interval_egr    = 10.0
 
     samples = []
 
-    # Configure dynamic sampling distribution based on num_samples
+    # Configure dynamic sampling distribution based on num_samples and pre_tot presence
+    has_pre = ("pre_tot" in caps and counts["pre_tot"] > 0)
+
     if num_samples == 20:
-        fracs_ingress = [0.0, 0.28, 0.55, 0.82]
-        fracs_pre_tot = [0.25, 0.55, 0.85]
+        if has_pre:
+            fracs_ingress = [0.0, 0.28, 0.55, 0.82]
+            fracs_pre_tot = [0.25, 0.55, 0.85]
+            fracs_egress = [0.10, 0.25, 0.40, 0.55, 0.70, 0.85]
+        else:
+            fracs_ingress = [0.0, 0.18, 0.36, 0.54, 0.72, 0.90]
+            fracs_pre_tot = []
+            fracs_egress = [0.10, 0.24, 0.38, 0.52, 0.66, 0.80, 0.95]
+
         tot_key_moments = [
             (3.45,   "ingress_beads"),        # C2 -> 20:27:35 CEST
             (10.00,  "ingress_chromosphere"), # 20:27:41 CEST
@@ -367,10 +458,16 @@ def sample_eclipse_sequence(
             (98.00,  "egress_chromosphere"),  # 20:29:09 CEST
             (100.50, "egress_beads"),         # C3 -> 20:29:12 CEST
         ]
-        fracs_egress = [0.10, 0.25, 0.40, 0.55, 0.70, 0.85]
     elif num_samples == 14:
-        fracs_ingress = [0.0, 0.58]
-        fracs_pre_tot = [0.28, 0.78]
+        if has_pre:
+            fracs_ingress = [0.0, 0.58]
+            fracs_pre_tot = [0.28, 0.78]
+            fracs_egress = [0.18, 0.42, 0.68, 0.92]
+        else:
+            fracs_ingress = [0.0, 0.33, 0.66, 0.92]
+            fracs_pre_tot = []
+            fracs_egress = [0.08, 0.35, 0.65, 0.92]
+
         tot_key_moments = [
             (3.45,   "ingress_beads"),        # C2 -> 20:27:35 CEST
             (10.00,  "ingress_chromosphere"), # 20:27:41 CEST
@@ -379,7 +476,6 @@ def sample_eclipse_sequence(
             (98.00,  "egress_chromosphere"),  # 20:29:09 CEST
             (100.50, "egress_beads"),         # C3 -> 20:29:12 CEST
         ]
-        fracs_egress = [0.18, 0.42, 0.68, 0.92]
     else:
         tot_key_moments = [
             (3.45,   "ingress_beads"),
@@ -399,12 +495,19 @@ def sample_eclipse_sequence(
         ]
         n_tot = len(tot_key_moments)
         n_rem = max(3, num_samples - n_tot)
-        n_ing = max(1, int(round(n_rem * 0.28)))
-        n_pre = max(1, int(round(n_rem * 0.22)))
-        n_egr = max(1, n_rem - n_ing - n_pre)
-        fracs_ingress = np.linspace(0.0, 0.85, n_ing).tolist()
-        fracs_pre_tot = np.linspace(0.20, 0.85, n_pre).tolist()
-        fracs_egress = np.linspace(0.10, 0.88, n_egr).tolist()
+        if has_pre:
+            n_ing = max(1, int(round(n_rem * 0.28)))
+            n_pre = max(1, int(round(n_rem * 0.22)))
+            n_egr = max(1, n_rem - n_ing - n_pre)
+            fracs_ingress = np.linspace(0.0, 0.85, n_ing).tolist()
+            fracs_pre_tot = np.linspace(0.20, 0.85, n_pre).tolist()
+            fracs_egress = np.linspace(0.10, 0.88, n_egr).tolist()
+        else:
+            n_ing = max(1, int(round(n_rem * 0.50)))
+            n_egr = max(1, n_rem - n_ing)
+            fracs_ingress = np.linspace(0.0, 0.90, n_ing).tolist()
+            fracs_pre_tot = []
+            fracs_egress = np.linspace(0.10, 0.90, n_egr).tolist()
 
     # Single-clip fallback
     if len(caps) == 1:

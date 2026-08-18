@@ -85,12 +85,15 @@ def parse_coc_filename(filepath):
     music_author = None
 
     interval = None
+    is_preprocessed = False
     if primary_token == "timelapse":
         asset_type = "timelapse"
         interval = 10.0
         for tok in tokens[1:]:
             tok_l = tok.lower()
-            if tok_l.startswith("i") and tok_l[1:].replace('.', '', 1).isdigit():
+            if tok_l in ["prep", "preprocessed", "restored"]:
+                is_preprocessed = True
+            elif tok_l.startswith("i") and tok_l[1:].replace('.', '', 1).isdigit():
                 interval = float(tok_l[1:])
             elif tok_l.endswith("s") and tok_l[:-1].replace('.', '', 1).isdigit():
                 interval = float(tok_l[:-1])
@@ -160,6 +163,7 @@ def parse_coc_filename(filepath):
         'raw_name': basename,
         'path': filepath,
         'asset_type': asset_type,
+        'is_preprocessed': is_preprocessed,
         'duration': duration,
         'interval': interval,
         'layout': layout,
@@ -198,26 +202,92 @@ def discover_coc_assets(in_dir="010_in"):
 
 
 
-def detect_project_resolution(assets, fallback=(1280, 720)):
+def resolve_preprocessed_timelapse(
+    asset_item,
+    repo_root=None,
+    force=False,
+    extrapolate_c1=True,
+    extrapolate_c2=True,
+    extrapolate_c3=True,
+    extrapolate_c4=True
+):
+    """
+    Resolves preprocessed restored timelapses from 005_raw_preprocessed/.
+    If missing or force is True, automatically runs preprocess_raw_eclipse_timelapses.py.
+    """
+    if repo_root is None:
+        repo_root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+    raw_dir = os.path.join(repo_root, "000_raw")
+    prep_dir = os.path.join(repo_root, "005_raw_preprocessed")
+    os.makedirs(prep_dir, exist_ok=True)
+
+    raw_tls = sorted([f for f in os.listdir(raw_dir) if f.endswith(".mp4") and "_TL_" in f])
+    if not raw_tls:
+        raise FileNotFoundError(f"No raw timelapse files (*_TL_*.mp4) found in {raw_dir}")
+
+    prep_tls = sorted([f for f in os.listdir(prep_dir) if f.endswith(".mp4") and "_TL_" in f])
+    idx = asset_item['index']
+
+    if len(prep_tls) < 2 or force:
+        print(f"\n[CoC Preprocessing] Preprocessed videos missing or rebuild forced in {prep_dir}")
+        print("Launching Autonomous Raw Eclipse Preprocessing Pipeline...")
+        from preprocess_raw_eclipse_timelapses import run_master_preprocessing_pipeline
+        run_master_preprocessing_pipeline(
+            raw_dir=raw_dir,
+            preprocessed_dir=prep_dir,
+            out_dir=os.path.join(repo_root, "040_out"),
+            ingress_filename=raw_tls[0],
+            egress_filename=raw_tls[1] if len(raw_tls) > 1 else raw_tls[0],
+            extrapolate_c1=extrapolate_c1,
+            extrapolate_c2=extrapolate_c2,
+            extrapolate_c3=extrapolate_c3,
+            extrapolate_c4=extrapolate_c4
+        )
+        prep_tls = sorted([f for f in os.listdir(prep_dir) if f.endswith(".mp4") and "_TL_" in f])
+
+    if not prep_tls:
+        raise FileNotFoundError(f"Failed to find any preprocessed timelapses in {prep_dir}")
+
+    chosen_file = prep_tls[0] if idx <= 2 else prep_tls[-1]
+    prep_video_path = os.path.join(prep_dir, chosen_file)
+
+    if not os.path.exists(prep_video_path):
+        raise FileNotFoundError(f"Failed to find preprocessed video at: {prep_video_path}")
+
+    return prep_video_path
+
+
+def detect_project_resolution(assets, repo_root=None, fallback=(1280, 720)):
     """
     Extracts native resolution from the first video/timelapse or photo asset.
     """
+    if repo_root is None:
+        repo_root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+
     for item in assets:
         t = item['asset_type']
         p = item['path']
+        if item.get('is_preprocessed'):
+            try:
+                p = resolve_preprocessed_timelapse(item, repo_root=repo_root, force=False)
+            except Exception:
+                p = item['path']
+
         if t in ['timelapse', 'video_slowdown', 'video_realtime']:
-            cap = cv2.VideoCapture(p)
-            if cap.isOpened():
-                w = int(cap.get(cv2.CAP_PROP_FRAME_WIDTH))
-                h = int(cap.get(cv2.CAP_PROP_FRAME_HEIGHT))
-                cap.release()
-                if w > 0 and h > 0:
-                    return w, h
+            if os.path.exists(p) and not os.path.isdir(p):
+                cap = cv2.VideoCapture(p)
+                if cap.isOpened():
+                    w = int(cap.get(cv2.CAP_PROP_FRAME_WIDTH))
+                    h = int(cap.get(cv2.CAP_PROP_FRAME_HEIGHT))
+                    cap.release()
+                    if w > 0 and h > 0:
+                        return w, h
         elif t == 'photo':
-            img = cv2.imread(p)
-            if img is not None:
-                h, w = img.shape[:2]
-                return w, h
+            if os.path.exists(p) and not os.path.isdir(p):
+                img = cv2.imread(p)
+                if img is not None:
+                    h, w = img.shape[:2]
+                    return w, h
 
     return fallback
 
@@ -1118,6 +1188,7 @@ def assemble_art_film(
     master_w: int = 1280,
     master_h: int = 720,
     visual_assets: list = None,
+    processed_clip_paths: list = None,
     no_title: bool = False,
     title_duration: float = 5.0,
     freeze_before: float = 1.0,
@@ -1131,21 +1202,26 @@ def assemble_art_film(
     preset: str = "fast",
     music_asset: dict = None,
     date_str: str = None,
-    force_all: bool = False
+    force_all: bool = False,
+    force_prep: bool = False,
+    extrapolate_c1: bool = False
 ):
     """
     Assembles the film in 'art' cinematic style:
       1. Title Card (00_title.mp4) [fade_to_black]
       2. Full Composite Overview & Ingress Zoom-In Dive (art_01_dive_in.mp4) [hard]
-      3. Ingress Timelapse (01_timelapse_i10.mp4) [fade_to_black]
-      4. Pre-totality Slowdown (02_video_slowdown_10.mp4) [fade_to_black]
-      5. Real-time Totality Part 1 (art_03_totality_p1.mp4) [crossfade 0.8s]
-      6. Multi-Exposure Totality HDR Artwork (05_totality_6.mp4) [crossfade 0.8s]
-      7. Real-time Totality Part 2 (art_03_totality_p2.mp4) [fade_to_black]
-      8. Egress Timelapse (04_timelapse_i10.mp4) [hard]
-      9. Egress Zoom-Out Dive & Full Composite Outro (art_02_dive_out.mp4) [fade_to_black]
+      3. Ingress Timelapse (01_timelapse) [fade_to_black]
+      4. Pre-totality Slowdown [fade_to_black]
+      5. Real-time Totality Part 1 [crossfade 0.8s]
+      6. Multi-Exposure Totality HDR Artwork [crossfade 0.8s]
+      7. Real-time Totality Part 2 [fade_to_black]
+      8. Egress Timelapse [hard]
+      9. Egress Zoom-Out Dive & Full Composite Outro [fade_to_black]
       10. Closing Credits & End Titles (07_endtitles.mp4)
     """
+    if processed_clip_paths is None:
+        processed_clip_paths = [os.path.join(out_dir, f) for f in os.listdir(out_dir) if f.endswith(".mp4")]
+
     print("=" * 65)
     print(f"ASSEMBLING CINEMATIC 'ART' FILM: {output_path}")
     print(f"  Resolution : {master_w}x{master_h} @ {fps:.2f} fps")
@@ -1155,25 +1231,30 @@ def assemble_art_film(
     # 1. Ensure Title Card exists if requested
     title_path = os.path.join(out_dir, "00_title.mp4")
     if not no_title and (not os.path.exists(title_path) or force_all):
-        ctc.generate_title_card(duration_s=title_duration, width=master_w, height=master_h, out_dir=out_dir, output_mp4=title_path, date_str=date_str)
+        ctc.generate_title_card(duration_s=title_duration, width=master_w, height=master_h, out_dir=out_dir, output_mp4=title_path)
 
     # 2. Locate / generate composite 4k artwork for camera dive
     comp_asset = next((a for a in (visual_assets or []) if a['asset_type'] == 'composite'), None)
     comp_layout = comp_asset.get('layout', 'circle') if comp_asset else 'circle'
     art_comp_png = os.path.join(out_dir, f"art_composite_4k_{comp_layout}.png")
     art_comp_json = os.path.join(out_dir, f"art_composite_4k_{comp_layout}.json")
+    art_comp_video = os.path.join(out_dir, f"art_composite_4k_{comp_layout}.mp4")
+
+    repo_root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+    prep_dir = os.path.join(repo_root, "005_raw_preprocessed")
+    has_prep_raw = os.path.exists(prep_dir) and any(f.endswith(".mp4") for f in os.listdir(prep_dir))
+    prep_newer = False
+    if has_prep_raw and os.path.exists(art_comp_png):
+        mtime_comp = os.path.getmtime(art_comp_png)
+        for f in os.listdir(prep_dir):
+            if f.endswith(".mp4") and os.path.getmtime(os.path.join(prep_dir, f)) > mtime_comp:
+                prep_newer = True
+                break
+
     comp_regenerated = False
-    if not os.path.exists(art_comp_png) or force_all:
+    if not os.path.exists(art_comp_png) or force_all or force_prep or prep_newer:
         print(f"Generating 4K Ultra-HD Composite Canvas for Camera Dives ({comp_layout})...")
-        cec.build_composite(
-            layout=comp_layout,
-            width=3840,
-            height=2160,
-            show_info=False,
-            show_labels=False,
-            out_dir=out_dir,
-            output_path=art_comp_png
-        )
+        cec.build_composite(layout=comp_layout, width=3840, height=2160, out_dir=out_dir, output_path=art_comp_png)
         comp_regenerated = True
 
     # Read composite metadata for sample endpoints
@@ -1188,28 +1269,46 @@ def assemble_art_film(
         except Exception as e:
             print(f"Warning reading composite json: {e}")
 
-    # 3. Trim Ingress Timelapse and Generate Ingress Dive-In Clip
-    tl_in_path = os.path.join(out_dir, "01_timelapse_i10.mp4")
+    # Locate Ingress and Egress timelapse processed clips dynamically (prefer preprocessed)
+    prep_in = [p for p in processed_clip_paths if os.path.basename(p).startswith("01_") and "prep" in os.path.basename(p) and p.endswith(".mp4")]
+    tl_in_candidates = prep_in if prep_in else [p for p in processed_clip_paths if os.path.basename(p).startswith("01_") and p.endswith(".mp4")]
+    tl_in_path = tl_in_candidates[0] if tl_in_candidates else os.path.join(out_dir, "01_timelapse_prep_i10.mp4")
+
+    prep_eg = [p for p in processed_clip_paths if os.path.basename(p).startswith("04_") and "prep" in os.path.basename(p) and p.endswith(".mp4")]
+    tl_eg_candidates = prep_eg if prep_eg else [p for p in processed_clip_paths if os.path.basename(p).startswith("04_") and p.endswith(".mp4")]
+    tl_eg_path = tl_eg_candidates[0] if tl_eg_candidates else os.path.join(out_dir, "04_timelapse_prep_i10.mp4")
+
     art_tl_in_path = os.path.join(out_dir, "art_01_timelapse.mp4")
-    need_tl_in = not os.path.exists(art_tl_in_path) or force_all or comp_regenerated
+    need_tl_in = (
+        not os.path.exists(art_tl_in_path)
+        or force_all
+        or force_prep
+        or comp_regenerated
+        or (os.path.exists(tl_in_path) and os.path.getmtime(art_tl_in_path) < os.path.getmtime(tl_in_path))
+    )
     if need_tl_in:
-        print(f"Trimming Ingress Timelapse (starting at sample 0 frame {in_start_frame})...")
+        print(f"Trimming Ingress Timelapse from {os.path.basename(tl_in_path)} (starting at sample 0 frame {in_start_frame})...")
         cap = cv2.VideoCapture(tl_in_path)
         fourcc = cv2.VideoWriter_fourcc(*'mp4v')
         vw = cv2.VideoWriter(art_tl_in_path, fourcc, fps, (master_w, master_h))
         f_idx = 0
         while True:
             ret, frame = cap.read()
-            if not ret:
-                break
-            if f_idx >= in_start_frame:
-                vw.write(frame)
+            if not ret: break
+            if f_idx >= in_start_frame: vw.write(frame)
             f_idx += 1
         cap.release()
         vw.release()
 
     dive_in_path = os.path.join(out_dir, "art_01_dive_in.mp4")
-    need_dive_in = not os.path.exists(dive_in_path) or force_all or comp_regenerated or (os.path.exists(art_comp_png) and os.path.getmtime(dive_in_path) < os.path.getmtime(art_comp_png))
+    need_dive_in = (
+        not os.path.exists(dive_in_path)
+        or force_all
+        or force_prep
+        or comp_regenerated
+        or (os.path.exists(art_comp_png) and os.path.getmtime(dive_in_path) < os.path.getmtime(art_comp_png))
+        or (os.path.exists(art_tl_in_path) and os.path.getmtime(dive_in_path) < os.path.getmtime(art_tl_in_path))
+    )
     if need_dive_in:
         print("Generating Ingress Camera Dive (art_01_dive_in.mp4)...")
         ref_in = ccd.extract_first_frame(art_tl_in_path)
@@ -1228,12 +1327,16 @@ def assemble_art_film(
             reference_video_frame=ref_in
         )
 
-    # 4. Trim Egress Timelapse and Generate Egress Dive-Out Clip
-    tl_eg_path = os.path.join(out_dir, "04_timelapse_i10.mp4")
     art_tl_eg_path = os.path.join(out_dir, "art_04_timelapse.mp4")
-    need_tl_eg = not os.path.exists(art_tl_eg_path) or force_all or comp_regenerated
+    need_tl_eg = (
+        not os.path.exists(art_tl_eg_path)
+        or force_all
+        or force_prep
+        or comp_regenerated
+        or (os.path.exists(tl_eg_path) and os.path.getmtime(art_tl_eg_path) < os.path.getmtime(tl_eg_path))
+    )
     if need_tl_eg:
-        print(f"Trimming Egress Timelapse (ending at last sample frame {eg_end_frame})...")
+        print(f"Trimming Egress Timelapse from {os.path.basename(tl_eg_path)} (ending at last sample frame {eg_end_frame})...")
         cap = cv2.VideoCapture(tl_eg_path)
         fourcc = cv2.VideoWriter_fourcc(*'mp4v')
         vw = cv2.VideoWriter(art_tl_eg_path, fourcc, fps, (master_w, master_h))
@@ -1251,7 +1354,14 @@ def assemble_art_film(
         vw.release()
 
     dive_out_path = os.path.join(out_dir, "art_02_dive_out.mp4")
-    need_dive_out = not os.path.exists(dive_out_path) or force_all or comp_regenerated or (os.path.exists(art_comp_png) and os.path.getmtime(dive_out_path) < os.path.getmtime(art_comp_png))
+    need_dive_out = (
+        not os.path.exists(dive_out_path)
+        or force_all
+        or force_prep
+        or comp_regenerated
+        or (os.path.exists(art_comp_png) and os.path.getmtime(dive_out_path) < os.path.getmtime(art_comp_png))
+        or (os.path.exists(art_tl_eg_path) and os.path.getmtime(dive_out_path) < os.path.getmtime(art_tl_eg_path))
+    )
     if need_dive_out:
         print("Generating Egress Camera Dive (art_02_dive_out.mp4)...")
         ref_out = ccd.extract_last_frame(art_tl_eg_path)
@@ -1450,6 +1560,8 @@ def run_coc_pipeline(
     fade_duration=1.0,
     freeze_after=1.0,
     force_all=False,
+    force_prep=False,
+    extrapolate_c1=False,
     no_subtitles=False,
     no_title=False,
     title_duration=5.0,
@@ -1459,6 +1571,7 @@ def run_coc_pipeline(
     music_mode="arrange"
 ):
     os.makedirs(out_dir, exist_ok=True)
+    repo_root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 
     if output_film is None:
         output_film = os.path.join(out_dir, f"full_eclipse_{film_style}_video.mp4")
@@ -1469,7 +1582,7 @@ def run_coc_pipeline(
         print(f"[ERROR] No valid CoC assets found in '{in_dir}'!")
         return
 
-    master_w, master_h = detect_project_resolution(visual_assets, fallback=(1280, 720))
+    master_w, master_h = detect_project_resolution(visual_assets, repo_root=repo_root, fallback=(1280, 720))
 
     print("=" * 65)
     print("ECLIPSE ASSEMBLER: CONVENTION-OVER-CONFIGURATION MASTER PIPELINE")
@@ -1501,8 +1614,9 @@ def run_coc_pipeline(
                 height=master_h,
                 out_dir=out_dir,
                 output_mp4=title_clip_path,
-                date_str=date_str,
-                force_db=force_db
+                fps=30.0,
+                force_db=force_db,
+                date_str=date_str
             )
         processed_clip_paths.append(title_clip_path)
 
@@ -1517,28 +1631,45 @@ def run_coc_pipeline(
 
         print(f"Processing Asset [{idx:02d}]: {raw_name} ({a_type.upper()})...")
 
-        if os.path.exists(out_clip_path) and not force_all:
+        is_prep = a.get('is_preprocessed', False)
+        is_comp = (a_type == "composite")
+        skip_cache = (is_prep and force_prep) or (is_comp and force_prep)
+
+        if os.path.exists(out_clip_path) and os.path.getsize(out_clip_path) > 1024 and not force_all and not skip_cache:
             print(f"  • Asset output exists ({out_clip_path}), skipping (use --force-all to rebuild).")
             processed_clip_paths.append(out_clip_path)
             continue
 
         if a_type == "timelapse":
-            if has_totality and idx >= 4:
-                shift_offset = (35.0, 24.0)
-                r_fixed = 237.5 * (master_h / 720.0)
+            if a.get('is_preprocessed'):
+                prep_src = resolve_preprocessed_timelapse(a, repo_root=repo_root, force=force_all or force_prep, extrapolate_c1=extrapolate_c1)
+                print(f"  • Using Preprocessed Restored Timelapse: {prep_src} (stabilization skipped)")
+                cmd_prep = [
+                    'ffmpeg', '-y', '-loglevel', 'error',
+                    '-i', prep_src,
+                    '-vf', f"scale={master_w}:{master_h}:force_original_aspect_ratio=decrease,pad={master_w}:{master_h}:(ow-iw)/2:(oh-ih)/2:black",
+                    '-c:v', 'libx264', '-crf', '16', '-preset', 'fast',
+                    '-pix_fmt', 'yuv420p',
+                    out_clip_path
+                ]
+                subprocess.run(cmd_prep, check=True)
             else:
-                shift_offset = (0.0, 0.0)
-                r_fixed = 238.5 * (master_h / 720.0)
+                if has_totality and idx >= 4:
+                    shift_offset = (35.0, 24.0)
+                    r_fixed = 237.5 * (master_h / 720.0)
+                else:
+                    shift_offset = (0.0, 0.0)
+                    r_fixed = 238.5 * (master_h / 720.0)
 
-            stabilize_timelapse_asset(
-                in_path=in_path,
-                out_path=out_clip_path,
-                master_w=master_w,
-                master_h=master_h,
-                r_fixed=r_fixed,
-                shift_offset=shift_offset,
-                fps=30.0, crf=16, preset="fast"
-            )
+                stabilize_timelapse_asset(
+                    in_path=in_path,
+                    out_path=out_clip_path,
+                    master_w=master_w,
+                    master_h=master_h,
+                    r_fixed=r_fixed,
+                    shift_offset=shift_offset,
+                    fps=30.0, crf=16, preset="fast"
+                )
 
         elif a_type == "video_slowdown":
             process_video_slowdown_asset(
@@ -1612,6 +1743,7 @@ def run_coc_pipeline(
             master_w=master_w,
             master_h=master_h,
             visual_assets=visual_assets,
+            processed_clip_paths=processed_clip_paths,
             no_title=no_title,
             title_duration=title_duration,
             freeze_before=freeze_before,
@@ -1623,7 +1755,9 @@ def run_coc_pipeline(
             fps=30.0, crf=16, preset="fast",
             music_asset=music_asset,
             date_str=date_str,
-            force_all=force_all
+            force_all=force_all,
+            force_prep=force_prep,
+            extrapolate_c1=extrapolate_c1
         )
     else:
         assemble_master_film(
@@ -1729,6 +1863,10 @@ if __name__ == "__main__":
                         help="Force refresh eclipse database")
     parser.add_argument("--force-all", action="store_true",
                         help="Force re-processing and re-stabilizing all assets from scratch")
+    parser.add_argument("--force-prep", action="store_true",
+                        help="Force regeneration of preprocessed raw timelapses in 005_raw_preprocessed/")
+    parser.add_argument("--extrapolate-c1", "--extrapolate-C1", action="store_true",
+                        help="Extrapolate Ingress timelapse backward to First Contact (C1)")
     parser.add_argument("--no-music", action="store_true",
                         help="Skip automatic musical audio track synchronization and muxing")
     parser.add_argument("--music-mode", type=str, choices=["arrange", "stretch", "cut", "auto"], default="arrange",
@@ -1748,6 +1886,8 @@ if __name__ == "__main__":
         fade_duration=args.fade_duration,
         freeze_after=args.freeze_after,
         force_all=args.force_all,
+        force_prep=args.force_prep,
+        extrapolate_c1=args.extrapolate_c1,
         no_subtitles=args.no_subtitles,
         no_title=args.no_title,
         title_duration=args.title_duration,

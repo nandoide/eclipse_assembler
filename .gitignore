@@ -16,6 +16,7 @@ ENV/
 
 # Large media input/output directories & video files
 000_raw/
+005_raw_preprocessed/
 010_in/
 040_out*/
 *.mp4
