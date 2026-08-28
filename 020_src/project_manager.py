@@ -155,8 +155,7 @@ def resolve_project(
         raw_obs = os.path.join(repo_root, "000_raw", obs_name)
         raw_dir = raw_obs if os.path.exists(raw_obs) else os.path.join(repo_root, "000_raw")
         prep_obs = os.path.join(repo_root, "005_raw_preprocessed", obs_name)
-        prep_dir = prep_obs if os.path.exists(prep_obs) else os.path.join(repo_root, "005_raw_preprocessed")
-
+        prep_dir = prep_obs
         return {
             "name": folder_name,
             "project_id": proj_id,
@@ -253,7 +252,8 @@ def resolve_project(
     raw_obs = os.path.join(repo_root, "000_raw", obs_name)
     raw_dir = raw_obs if os.path.exists(raw_obs) else os.path.join(repo_root, "000_raw")
     prep_obs = os.path.join(repo_root, "005_raw_preprocessed", obs_name)
-    prep_dir = prep_obs if os.path.exists(prep_obs) else os.path.join(repo_root, "005_raw_preprocessed")
+    prep_dir = prep_obs
+    os.makedirs(prep_dir, exist_ok=True)
 
     return {
         "name": proj_name,

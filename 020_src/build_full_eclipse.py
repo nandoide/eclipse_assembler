@@ -93,6 +93,8 @@ def parse_coc_filename(filepath, is_project_preprocessed=False):
             tok_l = tok.lower()
             if tok_l in ["prep", "preprocessed", "restored"]:
                 is_preprocessed = True
+            elif tok_l.startswith("o") and tok_l[1:].replace('.', '', 1).isdigit():
+                interval = float(tok_l[1:])
             elif tok_l.startswith("i") and tok_l[1:].replace('.', '', 1).isdigit():
                 interval = float(tok_l[1:])
             elif tok_l.endswith("s") and tok_l[:-1].replace('.', '', 1).isdigit():
